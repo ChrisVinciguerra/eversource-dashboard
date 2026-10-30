@@ -1,9 +1,8 @@
 """Shared constants, error types, and config persistence.
 
-Config (session cookies, cached JWT, account metadata, Opower uuids) lives in
-~/.config/eversource-cli/config.json (mode 0600). The persistent browser
-profile (so MFA "remember this device" survives between logins) lives next to
-it in browser-profile/.
+Config (session cookies, Okta tokens, cached JWT, account metadata, Opower
+uuids) lives in ~/.config/eversource-cli/config.json (mode 0600). The account
+password is never stored there — it goes in the system keychain, see auth.py.
 """
 
 from __future__ import annotations
@@ -15,12 +14,27 @@ from zoneinfo import ZoneInfo
 
 CONFIG_DIR = Path.home() / ".config" / "eversource-cli"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-BROWSER_PROFILE = CONFIG_DIR / "browser-profile"  # persists MFA "remember device"
 TZ = ZoneInfo("America/New_York")
 ES = "https://www.eversource.com"
 LOGIN_URL = f"{ES}/security/account/login"
+MSLOGIN_URL = f"{ES}/security/account/MSLogin"
+MSLOGIN_RETURN_URL = "/cg/customer/accountoverview"
 ACCOUNT_URL = f"{ES}/cg/customer/Account"
 OPOWER_GQL = "https://ever.opower.com/ei/edge/apis/dsm-graphql-v1/cws/graphql"
+
+# Okta (Classic Engine) org backing the Eversource sign-in page. The site's SPA
+# signs in with /api/v1/authn and then exchanges the resulting one-shot
+# sessionToken for tokens over PKCE; auth.py replays exactly that.
+OKTA = "https://eversource-external.okta.com"
+OKTA_ISSUER = f"{OKTA}/oauth2/ausrjxam6icWYMIj41t7"
+OKTA_CLIENT_ID = "0oarjx5m8i3r1586a1t7"
+OKTA_REDIRECT_URI = f"{ES}/security/account/Login"
+# offline_access buys a refresh token, so an expired access token can be
+# renewed without the password (and without re-triggering MFA).
+OKTA_SCOPES = "openid profile email offline_access"
+
+# Service name for the keychain entry holding the account password.
+KEYCHAIN_SERVICE = "eversource-cli"
 
 # Timestamped export folders live beside the package (the repo root), so
 # `update` and `serve` find earlier exports no matter the working directory.
@@ -38,9 +52,9 @@ EXPORT_FIRST_HINT = "run `eversource.py export` first"
 Json = dict[str, Any]
 Cookie = dict[str, Any]
 
-# Config keys: "cookies" (list[Cookie]), "accounts" (Json), "jwt"
-# (dict[str, JwtCache]), "opower_meta" (dict[str, Json]), plus the legacy
-# "cookie" header string written by older versions.
+# Config keys: "username" (str), "cookies" (list[Cookie]), "okta" (OktaTokens),
+# "okta_dt" (str: device-trust cookie that suppresses MFA), "accounts" (Json),
+# "jwt" (dict[str, JwtCache]), "opower_meta" (dict[str, Json]).
 Config = dict[str, Any]
 
 
@@ -49,7 +63,11 @@ class CliError(Exception):
 
 
 class SessionExpired(CliError):
-    """The saved Eversource session is missing or no longer valid."""
+    """No usable session, and it could not be renewed without the password."""
+
+
+class MfaRequired(CliError):
+    """Okta wants a second factor and no way to ask for the code was given."""
 
 
 class NoExports(CliError):

@@ -1,7 +1,8 @@
 """Command-line interface.
 
 Commands:
-  login       open a browser, sign in (session kept in the profile)
+  login       sign in (password kept in the keychain, session renews itself)
+  logout      forget the saved session, password, and cached data
   accounts    list billing accounts and meters
   export      write quarter_hour/hourly/daily/monthly/bills CSVs into a
               timestamped folder under exports/
@@ -13,11 +14,13 @@ Commands:
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 from datetime import date
 
-from .client import Client, login
-from .config import CliError, Config, load_config
+from .auth import keychain_delete, login
+from .client import Client
+from .config import CONFIG_PATH, CliError, Config, load_config, save_config
 from .fetch import run_export, run_update
 
 ACCOUNT_HELP = "billing account number (default: first)"
@@ -25,9 +28,25 @@ EXPORT_OUTPUT_HELP = "output folder (default: exports/eversource_export_<timesta
 
 
 def cmd_login(args: argparse.Namespace, cfg: Config) -> None:
-    account_info = login(cfg, timeout=args.timeout)
+    username = args.username or cfg.get("username") or input("Email or username: ")
+    password = getpass.getpass(f"Password for {username}: ")
+    login(cfg, username, password, mfa_prompt=lambda _: input("Verification code: "))
+
+    with Client(cfg) as client:
+        account_info = client.accounts()
     count = len(account_info["accountSwitcherItems"])
     print(f"signed in — webId {account_info['webId']}, {count} billing account(s).")
+
+
+def cmd_logout(args: argparse.Namespace, cfg: Config) -> None:
+    username = cfg.get("username")
+    if username:
+        keychain_delete(username)
+    # Keep okta_dt: it only identifies this device, and keeping it means the
+    # next sign-in still doesn't have to re-run MFA.
+    cfg = {"okta_dt": cfg["okta_dt"]} if cfg.get("okta_dt") else {}
+    save_config(cfg)
+    print(f"signed out — cleared {CONFIG_PATH}")
 
 
 def cmd_accounts(args: argparse.Namespace, cfg: Config) -> None:
@@ -67,15 +86,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     login_cmd = sub.add_parser(
-        "login", help="open a browser, sign in, capture the session"
+        "login", help="sign in and save the session (asks for your password)"
     )
     login_cmd.add_argument(
-        "--timeout",
-        type=int,
-        default=300,
-        help="seconds to wait for sign-in to complete (default 300)",
+        "username", nargs="?", help="Eversource email or username (default: saved)"
     )
     login_cmd.set_defaults(func=cmd_login)
+
+    logout = sub.add_parser(
+        "logout", help="forget the saved session, password, and cached data"
+    )
+    logout.set_defaults(func=cmd_logout)
 
     accounts = sub.add_parser("accounts", help="list billing accounts and meters")
     accounts.set_defaults(func=cmd_accounts)

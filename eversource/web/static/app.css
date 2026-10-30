@@ -123,6 +123,41 @@ main {
   font-size: 13px;
 }
 .banner.error { color: var(--delta-bad); }
+
+/* ------------------------------------------------------------- dialog --- */
+
+.dialog {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elevated, var(--bg));
+  color: var(--text-primary);
+  padding: 22px 24px;
+  width: min(360px, calc(100vw - 32px));
+}
+.dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.dialog h2 { margin: 0 0 6px; font-size: 16px; }
+.dialog-note { margin: 0 0 16px; font-size: 12px; color: var(--text-secondary); }
+.dialog label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.dialog input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+.dialog input:focus { outline: none; border-color: var(--series-1); }
+.dialog-error { margin: 0 0 12px; font-size: 12px; color: var(--delta-bad); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .spinner {
   width: 12px; height: 12px;
   border: 2px solid var(--gridline);

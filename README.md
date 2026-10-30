@@ -15,12 +15,14 @@ usage-detail page.
 1. You sign in through Eversource's **Okta** login
    (`https://www.eversource.com/security/account/login`,
    issuer `eversource-external.okta.com/oauth2/ausrjxam6icWYMIj41t7`,
-   client `0oarjx5m8i3r1586a1t7`). The `login` command drives a real browser so
-   MFA/SSO just work, then captures the resulting session cookies.
-2. Eversource's own APIs need those cookies *plus* the Okta access token the
-   site's SPA keeps in `localStorage`, and they reject non-browser clients, so
-   the tool calls them with in-page `fetch()`es from a headless Chromium reusing
-   the saved profile and re-injected cookies. One of those calls,
+   client `0oarjx5m8i3r1586a1t7`). The `login` command replays exactly what the
+   sign-in page's SPA does, over plain HTTP: `POST /security/account/MSLogin`
+   for the Eversource session cookies, then Okta's `/api/v1/authn` for a
+   one-shot `sessionToken`, exchanged for tokens over PKCE. No browser is
+   involved. Okta's second factor is only asked for once — the device-trust
+   cookie it returns is kept and replayed, as the browser would.
+2. Eversource's own APIs need those cookies *plus* the Okta access token as an
+   `Authorization: Bearer` header. One of those calls,
    `getOpowerWidgetData/{account}`, returns a short-lived (1 hour) Opower JWT,
    which is cached and refreshed automatically.
 3. That JWT is used as a Bearer token against Opower's GraphQL API
@@ -32,17 +34,23 @@ match the API's own hourly/daily exports exactly). Billed monthly usage and bill
 are fetched separately because they carry costs and temperatures that aren't
 derivable from meter reads.
 
-Config (session cookies, cached JWT, account metadata, Opower service
-agreement/service point uuids) lives in `~/.config/eversource-cli/config.json`
-(mode 0600). The browser profile (so MFA "remember this device" persists between
-logins) lives in `~/.config/eversource-cli/browser-profile`.
+Sessions renew themselves. The access token is refreshed with the OAuth refresh
+token; if that is gone too, the saved password is used to sign in again from
+scratch. Either way it happens mid-request, so expiry is invisible — the
+`login` command and the dashboard's sign-in button exist for the first run.
+
+Config (session cookies, Okta tokens, the device-trust cookie, cached JWT,
+account metadata, Opower service agreement/service point uuids) lives in
+`~/.config/eversource-cli/config.json` (mode 0600). The password is **not** kept
+there — it goes in the macOS keychain under the service `eversource-cli`.
 
 ## Layout
 
 - `eversource.py` — thin entry-point shim for the CLI
 - `eversource/` — the package
   - `config.py` — constants, error types, config persistence
-  - `client.py` — authenticated Eversource/Opower client + the login flow
+  - `auth.py` — the browserless sign-in flow and credential storage
+  - `client.py` — authenticated Eversource/Opower client
   - `fetch.py` — fetching reads/bills and writing export folders
   - `data.py` — merging export folders and shaping the dashboard payload
   - `cli.py` — the command-line interface
@@ -50,24 +58,22 @@ logins) lives in `~/.config/eversource-cli/browser-profile`.
 
 ## Setup
 
-This is a `uv` project. Install dependencies and the browser once:
+This is a `uv` project. Install dependencies once:
 
 ```sh
 uv sync
-uv run playwright install chromium
 ```
 
-Then sign in — this opens a real browser window:
+Then sign in:
 
 ```sh
-uv run eversource.py login
+uv run eversource.py login            # or: login <email-or-username>
 ```
 
-Log in normally (username, password, MFA if prompted). The window closes
-automatically once the site makes a successful authenticated API call, and the
-session is captured. When it expires, just run `login` again (or use the
-dashboard's sign-in button) — thanks to the saved browser profile it's usually
-one click. `login --timeout <seconds>` (default 300) controls how long it waits.
+It asks for your password, and for a verification code if Okta wants one. The
+password is saved to the keychain and the device is remembered, so this is a
+one-time step: from then on the session renews itself silently and you should
+never be asked again. `uv run eversource.py logout` undoes it.
 
 ## The dashboard
 
@@ -86,8 +92,9 @@ merges every `exports/eversource_export_*` folder into one continuous span
 - a table view behind every chart
 
 On open, if the data doesn't reach today, it kicks off an update automatically
-and re-renders when it finishes. If the Eversource session has expired, the page
-offers a sign-in button that opens the login browser window on this machine.
+and re-renders when it finishes. An expired session is renewed in the
+background without interrupting you; the page only asks for a password if
+there isn't one saved yet.
 Light and dark themes follow the OS (toggleable in the header).
 `--port` picks the port; `--no-open` skips launching the browser.
 

@@ -26,8 +26,40 @@
 <div id="banner" class="banner" hidden>
   <span id="banner-spinner" class="spinner" hidden></span>
   <span id="banner-text"></span>
-  <button id="login-btn" class="btn btn-accent" type="button" hidden>Sign in to Eversource</button>
+  <button id="login-btn" class="btn btn-accent" type="button" hidden>Sign in</button>
 </div>
+
+<dialog id="login-dialog" class="dialog">
+  <form id="login-form" method="dialog">
+    <h2>Sign in to Eversource</h2>
+    <p id="login-note" class="dialog-note">
+      Your password is stored in the macOS keychain so the dashboard can renew
+      the session on its own from now on.
+    </p>
+    <label for="login-username">Email or username</label>
+    <input id="login-username" name="username" type="text" autocomplete="username" required>
+    <label for="login-password">Password</label>
+    <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+    <p id="login-error" class="dialog-error" hidden></p>
+    <div class="dialog-actions">
+      <button id="login-cancel" class="btn btn-ghost" type="button">Cancel</button>
+      <button id="login-submit" class="btn btn-accent" type="submit">Sign in</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="mfa-dialog" class="dialog">
+  <form id="mfa-form" method="dialog">
+    <h2>Verification code</h2>
+    <p id="mfa-note" class="dialog-note"></p>
+    <label for="mfa-code">Code</label>
+    <input id="mfa-code" name="code" type="text" inputmode="numeric"
+           autocomplete="one-time-code" required>
+    <div class="dialog-actions">
+      <button id="mfa-submit" class="btn btn-accent" type="submit">Verify</button>
+    </div>
+  </form>
+</dialog>
 
 <main>
   <section id="tiles" class="tiles" aria-label="Summary"></section>

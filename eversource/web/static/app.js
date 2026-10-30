@@ -1,6 +1,7 @@
 /* Eversource energy dashboard.
-   Data comes from /api/data; long operations (update, Eversource login) run
-   as server-side jobs polled via /api/job. */
+   Data comes from /api/data; long operations (update, sign-in) run as
+   server-side jobs polled via /api/job. Signing in happens in-page: once the
+   password is saved, an expired session renews itself with no prompt. */
 
 "use strict";
 
@@ -551,6 +552,7 @@ function setBanner({ text, spinning = false, error = false, login = false }) {
 }
 
 let polling = false;
+let mfaAsked = false;
 
 async function pollJob() {
   if (polling) return;
@@ -562,9 +564,11 @@ async function pollJob() {
       const job = await (await fetch("/api/job")).json();
       if (!job.running) {
         if (job.error && job.needs_login) {
-          setBanner({ text: "Your Eversource session has expired.", error: false, login: true });
+          setBanner({ text: "Your Eversource session has expired.", login: true });
+          openLogin();
         } else if (job.error) {
           setBanner({ text: job.error, error: true });
+          if (job.kind === "login") openLogin(job.error);
         } else {
           setBanner({});
           if (job.kind === "login") startUpdate();
@@ -575,11 +579,13 @@ async function pollJob() {
         }
         return;
       }
+      if (job.needs_mfa && !mfaAsked) {
+        mfaAsked = true;
+        $("mfa-note").textContent = job.mfa_prompt || "";
+        $("mfa-dialog").showModal();
+      }
       const last = job.log.length ? job.log[job.log.length - 1].split("\n")[0] : "Working…";
-      setBanner({
-        text: (job.kind === "login" ? "Waiting for sign-in — check the browser window. " : "") + last,
-        spinning: true,
-      });
+      setBanner({ text: last, spinning: true });
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   } finally {
@@ -594,11 +600,57 @@ async function startUpdate() {
   pollJob();
 }
 
-$("update-btn").addEventListener("click", startUpdate);
-$("login-btn").addEventListener("click", async () => {
-  setBanner({ text: "Opening a sign-in window on this machine…", spinning: true });
-  await fetch("/api/login", { method: "POST" });
+/* -------------------------------------------------------------- sign-in --- */
+
+async function openLogin(error) {
+  const session = await (await fetch("/api/session")).json();
+  // Credentials are already saved: re-auth needs nothing from the user.
+  if (session.ready && !error) {
+    startLogin({});
+    return;
+  }
+  $("login-username").value = session.username || "";
+  $("login-password").value = "";
+  $("login-error").textContent = error || "";
+  $("login-error").hidden = !error;
+  if (!$("login-dialog").open) $("login-dialog").showModal();
+  ($("login-username").value ? $("login-password") : $("login-username")).focus();
+}
+
+async function startLogin(body) {
+  mfaAsked = false;
+  setBanner({ text: "Signing in…", spinning: true });
+  await fetch("/api/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   pollJob();
+}
+
+$("update-btn").addEventListener("click", startUpdate);
+$("login-btn").addEventListener("click", () => openLogin());
+
+$("login-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  $("login-dialog").close();
+  startLogin({
+    username: $("login-username").value.trim(),
+    password: $("login-password").value,
+  });
+});
+$("login-cancel").addEventListener("click", () => $("login-dialog").close());
+
+$("mfa-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const code = $("mfa-code").value.trim();
+  $("mfa-code").value = "";
+  $("mfa-dialog").close();
+  await fetch("/api/mfa", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
 });
 
 function dataIsStale() {
