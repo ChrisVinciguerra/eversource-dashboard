@@ -1,16 +1,18 @@
 """Authenticated access to the Eversource and Opower APIs.
 
 Auth model (reverse-engineered from the usage-detail page):
-  1. Sign in through Eversource's Okta login in a real browser window (the
-     login() flow). The session lives in a persistent Chromium profile.
-  2. Eversource's own APIs need the session cookies plus an Okta access token
-     (Authorization: Bearer) that the site's SPA keeps in localStorage, so the
-     Client calls them with in-page fetch()es from a headless Chromium reusing
-     that profile. One such call,
+  1. Sign in over plain HTTP — see auth.py — which yields the eversource.com
+     session cookies and an Okta access token.
+  2. Eversource's own APIs need both: the cookies plus the Okta token as an
+     Authorization: Bearer header. One such call,
      /cg/customer/api/accountbilling/getOpowerWidgetData/{account}, yields a
      short-lived (1h) Opower JWT.
   3. That JWT is the Bearer token for Opower's GraphQL API (ever.opower.com),
      which serves the daily / hourly / 15-min interval reads.
+
+Nothing here needs a browser. An expired session is renewed in place — from
+the refresh token, or failing that the keychain password — so callers only see
+SessionExpired when there is genuinely nothing left to try.
 """
 
 from __future__ import annotations
@@ -18,18 +20,22 @@ from __future__ import annotations
 import base64
 import json
 import time
-from contextlib import suppress
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self, TypedDict
+from typing import Any, Self, TypedDict
 
 import requests
 
+from .auth import (
+    API_HEADERS,
+    access_token,
+    credentials,
+    load_cookies,
+    login,
+    new_session,
+)
 from .config import (
-    ACCOUNT_URL,
-    BROWSER_PROFILE,
     ES,
-    LOGIN_URL,
     OPOWER_GQL,
     RELOGIN_HINT,
     UA,
@@ -40,9 +46,6 @@ from .config import (
     save_config,
 )
 from .progress import emit
-
-if TYPE_CHECKING:
-    from playwright.sync_api import BrowserContext, Page, Playwright
 
 
 class JwtCache(TypedDict):
@@ -199,17 +202,11 @@ query WDB_GetCostUsageReadsForBills($selectedAccount: ID, $last: Int, $timeInter
 
 
 class Client:
-    """Client for both backends behind this tool.
-
-    Eversource is driven through a headless browser because its APIs reject
-    non-browser clients even with valid cookies; Opower is plain requests.
-    """
+    """Client for both backends behind this tool, over plain HTTP."""
 
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
-        self._playwright: Playwright | None = None
-        self._context: BrowserContext | None = None
-        self._page: Page | None = None
+        self._session: requests.Session | None = None
 
     def __enter__(self) -> Self:
         return self
@@ -222,87 +219,67 @@ class Client:
     ) -> None:
         self.close()
 
-    # -- Eversource (in-browser) APIs ----------------------------------------
-
-    def _browser_page(self) -> Page:
-        """Return a headless page with a live Eversource session."""
-        if self._page is not None:
-            return self._page
-
-        if not self.cfg.get("cookies"):
-            raise SessionExpired(f"no saved session. {RELOGIN_HINT}")
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.sync_api import sync_playwright
-
-        self._playwright = sync_playwright().start()
-        context = self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_PROFILE),
-            headless=True,
-            user_agent=UA,
-        )
-        self._context = context
-        # Auth cookies are session cookies and don't survive a browser
-        # restart on their own — re-inject the ones captured at login.
-        context.add_cookies(self.cfg["cookies"])
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(ACCOUNT_URL, wait_until="domcontentloaded")
-        if "/security/account/login" in page.url:
-            raise SessionExpired(f"Eversource session expired. {RELOGIN_HINT}")
-        # Let the SPA settle — it refreshes the Okta token we need. A chatty
-        # page may never go idle; the token is usually there regardless.
-        with suppress(PlaywrightTimeoutError):
-            page.wait_for_load_state("networkidle", timeout=15000)
-        self._page = page
-        return page
-
-    def _bearer(self) -> str:
-        """Return the Okta access token the SPA stores in localStorage.
-
-        Eversource's APIs require it as a Bearer header on top of the cookies.
-        """
-        token = self._browser_page().evaluate(
-            "() => JSON.parse(localStorage.getItem('okta-token-storage') || '{}')"
-            "?.accessToken?.accessToken"
-        )
-        if not token:
-            raise SessionExpired(f"no Okta token in the browser session. {RELOGIN_HINT}")
-        return token
-
     def close(self) -> None:
-        if self._page is None:
-            return
-        assert self._context is not None and self._playwright is not None
-        self._context.close()
-        self._playwright.stop()
-        self._page = None
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+
+    # -- Eversource APIs -----------------------------------------------------
+
+    def session(self) -> requests.Session:
+        """Return a session carrying the saved Eversource cookies."""
+        if self._session is None:
+            if not self.cfg.get("cookies") and not credentials(self.cfg):
+                raise SessionExpired(f"no saved session. {RELOGIN_HINT}")
+            self._session = load_cookies(new_session(), self.cfg)
+        return self._session
+
+    def _reauth(self) -> None:
+        """Sign in again in place, keeping the same Client usable."""
+        if not credentials(self.cfg):
+            raise SessionExpired(f"Eversource session expired. {RELOGIN_HINT}")
+        emit("Session expired — signing in again…")
+        self._session = login(self.cfg)
 
     def es_get(self, path: str) -> Any:
-        """GET an Eversource JSON API from inside the authenticated page."""
-        status, body = self._browser_page().evaluate(
-            """async ([path, bearer]) => {
-                const r = await fetch(path, {
-                    headers: {
-                        Accept: 'application/json',
-                        Authorization: 'Bearer ' + bearer,
-                    },
-                    credentials: 'include',
-                });
-                return [r.status, await r.text()];
-            }""",
-            [path, self._bearer()],
-        )
-        if status != 200:
-            raise SessionExpired(
-                f"Eversource API {path} returned {status}. "
-                f"If this persists, re-login. {RELOGIN_HINT}"
+        """GET an Eversource JSON API, renewing the session if it has lapsed."""
+        for attempt in (1, 2):
+            session = self.session()
+            try:
+                bearer = access_token(self.cfg, session)
+            except SessionExpired:
+                if attempt == 2:
+                    raise
+                self._reauth()
+                continue
+
+            response = session.get(
+                ES + path,
+                headers={**API_HEADERS, "Authorization": f"Bearer {bearer}"},
+                allow_redirects=False,
+                timeout=60,
             )
-        try:
-            return json.loads(body)
-        except json.JSONDecodeError:
-            raise SessionExpired(
-                "Eversource returned HTML instead of JSON (session expired?). "
-                f"{RELOGIN_HINT}"
-            ) from None
+            # A lapsed ASP.NET session shows up as a 401/403, or as the login
+            # page served with a 200 in place of the JSON that was asked for.
+            stale = response.status_code in (401, 403) or (
+                "json" not in response.headers.get("content-type", "")
+            )
+            if stale and attempt == 1:
+                self._reauth()
+                continue
+            if response.status_code != 200:
+                raise SessionExpired(
+                    f"Eversource API {path} returned {response.status_code}. "
+                    f"{RELOGIN_HINT}"
+                )
+            try:
+                return response.json()
+            except json.JSONDecodeError:
+                raise SessionExpired(
+                    "Eversource returned HTML instead of JSON (session expired?). "
+                    f"{RELOGIN_HINT}"
+                ) from None
+        raise SessionExpired(f"could not re-establish the session. {RELOGIN_HINT}")
 
     def accounts(self) -> Json:
         """Return the account/meter directory for this login (cached)."""
@@ -409,89 +386,3 @@ class Client:
         self.cfg.setdefault("opower_meta", {})[key] = meta.to_json()
         save_config(self.cfg)
         return meta
-
-
-# ------------------------------------------------------------------- login --
-
-
-def login(cfg: Config, timeout: float = 300) -> Json:
-    """Open a browser window, let the user sign in, and capture the session.
-
-    Returns the account directory for the fresh session. Used by both the
-    `login` CLI command and the dashboard's log-in button.
-    """
-    try:
-        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        raise CliError(
-            "playwright is not installed. Install it with:\n"
-            "    uv add playwright && uv run playwright install chromium"
-        ) from None
-
-    emit(
-        "Opening a browser to the Eversource sign-in page.\n"
-        "Log in normally (username, password, and MFA if prompted).\n"
-        "The window closes by itself once your account page has loaded its data."
-    )
-
-    BROWSER_PROFILE.mkdir(parents=True, exist_ok=True)
-    with sync_playwright() as playwright:
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_PROFILE),
-            headless=False,
-            user_agent=UA,
-            args=["--no-first-run"],
-        )
-
-        # Don't trust the URL to mean "signed in" — wait until the site itself
-        # gets a 200 from an authenticated API, which proves the session is live.
-        authenticated = False
-
-        def on_response(response: Any) -> None:
-            nonlocal authenticated
-            if response.status == 200 and (
-                "/account/api/account" in response.url
-                or "/cg/customer/api/" in response.url
-            ):
-                authenticated = True
-
-        context.on("response", on_response)
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(LOGIN_URL)
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and not authenticated:
-            page.wait_for_timeout(500)
-
-        if not authenticated:
-            context.close()
-            raise CliError(
-                "timed out waiting for an authenticated API call. If you were "
-                "signed in, try visiting your account or usage page before the "
-                "timeout, or increase --timeout."
-            )
-
-        # Let in-flight requests finish setting their cookies; polling widgets
-        # can keep the page busy past the timeout, by which point they are set.
-        with suppress(PlaywrightTimeoutError):
-            page.wait_for_load_state("networkidle", timeout=10000)
-        cookies = context.cookies()
-        context.close()
-
-    # Session cookies don't persist across browser restarts, so keep the full
-    # cookie objects and re-inject them on each headless run. Fresh session:
-    # drop anything cached under the old one.
-    cfg["cookies"] = [
-        cookie
-        for cookie in cookies
-        if cookie["domain"].lstrip(".").endswith("eversource.com")
-    ]
-    cfg.pop("accounts", None)
-    cfg.pop("jwt", None)
-    cfg.pop("opower_meta", None)
-    cfg.pop("cookie", None)  # legacy header-string format
-    save_config(cfg)
-
-    with Client(cfg) as client:
-        return client.accounts()
