@@ -1,0 +1,21 @@
+# Captured browser data (contains personal account info, addresses, tokens)
+*.har
+eversource.html
+eversource_files/
+har_extracts/
+
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+
+# Local config / captured sessions
+.config/
+
+# Exported energy data (personal usage)
+exports/
+eversource_export_*/
+*.csv
+
+# macOS
+.DS_Store
