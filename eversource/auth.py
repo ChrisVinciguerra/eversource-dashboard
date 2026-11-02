@@ -36,6 +36,7 @@ from .config import (
     ES,
     KEYCHAIN_SERVICE,
     LOGIN_URL,
+    MFALOGIN_URL,
     MSLOGIN_URL,
     MSLOGIN_RETURN_URL,
     OKTA,
@@ -206,13 +207,14 @@ def _eversource_signin(
     """Steps 1-2: the ASP.NET session cookies Eversource's own APIs require."""
     page = session.get(LOGIN_URL, timeout=30)
     page.raise_for_status()
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": LOGIN_URL,
+        "__RequestVerificationToken": _form_token(page.text),
+    }
     response = session.post(
         MSLOGIN_URL,
-        headers={
-            "Accept": "application/json, text/plain, */*",
-            "Referer": LOGIN_URL,
-            "__RequestVerificationToken": _form_token(page.text),
-        },
+        headers=headers,
         files={
             "WebId": (None, username),
             "Password": (None, password),
@@ -230,6 +232,30 @@ def _eversource_signin(
             "Eversource rejected the sign-in: "
             f"{re.sub(r'<[^>]+>', '', messages).strip() or 'unknown error'}"
         )
+    # Since late 2026, MSLogin only validates the credentials; the session
+    # cookies (.TOKENCOOKIE etc.) are minted by a second call, MFALogin, keyed
+    # on the encrypted user id MSLogin returns as `token`. The site's own MFA
+    # wizard between the two is enforced client-side only — Okta's real second
+    # factor is still handled in _session_token.
+    if body.get("token"):
+        finish = session.post(
+            MFALOGIN_URL,
+            json={
+                "WebId": username,
+                "Password": password,
+                "UserId": body["token"],
+                "RememberID": False,
+                "ReturnUrl": MSLOGIN_RETURN_URL,
+            },
+            headers=headers,
+            timeout=60,
+        )
+        finish.raise_for_status()
+        if not finish.json().get("IsSuccess"):
+            raise CliError(
+                "Eversource validated the credentials but refused to finish the "
+                "sign-in (MFALogin) — the flow may have changed again."
+            )
     return body
 
 
