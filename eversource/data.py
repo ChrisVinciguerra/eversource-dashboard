@@ -173,7 +173,9 @@ def build_payload() -> Json:
             continue
         has_cost = add_effective_rate_cost(frame, bills)
         intervals[name] = _interval_payload(frame, has_cost)
-        last_read = max(filter(None, [last_read, frame["end"].max()]))
+        # Finest dataset wins (the loop is coarsest-first): a partial day's
+        # daily bucket "ends" at the next midnight, past the actual reads.
+        last_read = frame["end"].max() or last_read
 
     return {
         "intervals": intervals,
