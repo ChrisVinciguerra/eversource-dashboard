@@ -21,7 +21,7 @@ from .config import (
     Json,
     NoExports,
 )
-from .devices import device_entry, load_devices
+from .devices import device_entry, load_devices, overlap_entries
 from .progress import emit
 
 # Dedup keys per dataset: rows matching on these are the same observation, and
@@ -200,6 +200,12 @@ def build_payload() -> Json:
                 device_entry(device, starts, name, rate_by_day, cutoff)
                 for device in devices
             ]
+            # Energy two devices metered twice (laptop charging through a
+            # metered charging station); subtracted back out client-side when
+            # both are excluded at once.
+            overlaps = overlap_entries(devices, starts, name, rate_by_day, cutoff)
+            if overlaps:
+                intervals[name]["overlaps"] = overlaps
         # Finest dataset wins (the loop is coarsest-first): a partial day's
         # daily bucket "ends" at the next midnight, past the actual reads.
         last_read = frame["end"].max() or last_read

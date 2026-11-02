@@ -148,19 +148,30 @@ function excludedDevices(res) {
   return interval.devices.filter((dev) => state.excluded.has(dev.name));
 }
 
+// Overlap streams (energy two excluded devices both metered) that apply to
+// the current exclusion set: both of the pair's names must be excluded.
+function activeOverlaps(res) {
+  const interval = intervalFor(res);
+  if (!interval || !interval.overlaps) return [];
+  return interval.overlaps.filter((o) => o.names.every((n) => state.excluded.has(n)));
+}
+
 // Sum of the excluded devices' usage/cost per bucket start (ms), to subtract
-// from each displayed series.
+// from each displayed series. Energy metered by two excluded devices at once
+// (the Mac charging from a metered charging station) is counted once.
 function excludedOffsets(res) {
   const map = new Map();
-  for (const dev of excludedDevices(res)) {
-    for (let i = 0; i < dev.starts.length; i++) {
-      const ms = new Date(dev.starts[i]).getTime();
+  const add = (entry, sign) => {
+    for (let i = 0; i < entry.starts.length; i++) {
+      const ms = new Date(entry.starts[i]).getTime();
       const cur = map.get(ms) || { value: 0, cost: 0 };
-      cur.value += dev.values[i] ?? 0;
-      if (dev.costs) cur.cost += dev.costs[i] ?? 0;
+      cur.value += sign * (entry.values[i] ?? 0);
+      if (entry.costs) cur.cost += sign * (entry.costs[i] ?? 0);
       map.set(ms, cur);
     }
-  }
+  };
+  for (const dev of excludedDevices(res)) add(dev, 1);
+  for (const overlap of activeOverlaps(res)) add(overlap, -1);
   return map.size ? map : null;
 }
 
@@ -483,15 +494,18 @@ function dailyTotals() {
       byDay.set(day, cur);
     }
   }
-  // Excluded devices come off the day totals once (not once per stream).
-  for (const dev of excludedDevices("daily")) {
-    for (let i = 0; i < dev.starts.length; i++) {
-      const cur = byDay.get(dev.starts[i].slice(0, 10));
+  // Excluded devices come off the day totals once (not once per stream);
+  // overlaps between excluded devices go back so they only come off once.
+  const adjust = (entry, sign) => {
+    for (let i = 0; i < entry.starts.length; i++) {
+      const cur = byDay.get(entry.starts[i].slice(0, 10));
       if (!cur) continue;
-      cur.value -= dev.values[i] ?? 0;
-      if (cur.hasCost && dev.costs) cur.cost -= dev.costs[i] ?? 0;
+      cur.value -= sign * (entry.values[i] ?? 0);
+      if (cur.hasCost && entry.costs) cur.cost -= sign * (entry.costs[i] ?? 0);
     }
-  }
+  };
+  for (const dev of excludedDevices("daily")) adjust(dev, 1);
+  for (const overlap of activeOverlaps("daily")) adjust(overlap, -1);
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
 }
 

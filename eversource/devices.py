@@ -44,7 +44,7 @@ _KEY_LEN = len("2026-01-01T00:00")
 
 
 def parse_spec(spec: Json) -> Json:
-    """Validate a device document into {"name", "cycle", "readings", "window"}.
+    """Validate a device document into {"name", "cycle", "readings", "window", …}.
 
     Raises KeyError/TypeError/ValueError on a malformed document.
     """
@@ -53,14 +53,27 @@ def parse_spec(spec: Json) -> Json:
         [float(v) for v in spec["pattern"]["values_kwh"]] if "pattern" in spec else []
     )
     readings: dict[str, float] = {}
+    ports: dict[str, dict[str, float]] = {}
     window: tuple[str, str] | None = None
     if "readings" in spec:
         raw = spec["readings"]
         window = (str(raw["start"])[:_KEY_LEN], str(raw["end"])[:_KEY_LEN])
         readings = {str(k)[:_KEY_LEN]: float(v) for k, v in raw["values_kwh"].items()}
+        ports = {
+            str(port): {str(k)[:_KEY_LEN]: float(v) for k, v in vals.items()}
+            for port, vals in raw.get("ports", {}).items()
+        }
     if not cycle and window is None:
         raise ValueError("device has neither a pattern nor readings")
-    return {"name": name, "cycle": cycle, "readings": readings, "window": window}
+    overlaps = spec.get("overlaps_with", [])
+    return {
+        "name": name,
+        "cycle": cycle,
+        "readings": readings,
+        "window": window,
+        "ports": ports,
+        "overlaps_with": [overlaps] if isinstance(overlaps, str) else list(overlaps),
+    }
 
 
 def load_devices() -> list[Json]:
@@ -179,3 +192,76 @@ def device_entry(
             for start, value in zip(starts, values)
         ]
     return entry
+
+
+# ------------------------------------------------------------------ overlaps --
+
+# Two slot readings are "the same energy seen by two meters" when they agree
+# within this fraction (meters sample at different moments and sit on opposite
+# sides of the charger's conversion loss).
+OVERLAP_TOLERANCE = 0.3
+
+
+def _overlap_readings(device: Json, other: Json) -> Json | None:
+    """A pseudo-device holding the energy both `device` and `other` metered.
+
+    `device` declares overlaps_with and carries per-port readings (e.g. a
+    charging station); `other` is a load that may draw through one of those
+    ports some of the time (e.g. a laptop that also charges elsewhere). For
+    each 15-minute slot both devices cover, a port whose energy matches the
+    other device's reading within OVERLAP_TOLERANCE is the same energy metered
+    twice; the overlap is the smaller of the two readings.
+    """
+    if not device["ports"] or not device["window"] or not other["window"]:
+        return None
+    lo = max(device["window"][0], other["window"][0])
+    hi = min(device["window"][1], other["window"][1])
+    slots: dict[str, float] = {}
+    for key, other_kwh in other["readings"].items():
+        if other_kwh <= 0 or not lo <= key < hi:
+            continue
+        best = 0.0
+        for port_values in device["ports"].values():
+            port_kwh = port_values.get(key, 0.0)
+            if port_kwh <= 0:
+                continue
+            if abs(port_kwh - other_kwh) <= OVERLAP_TOLERANCE * max(port_kwh, other_kwh):
+                best = max(best, min(port_kwh, other_kwh))
+        if best:
+            slots[key] = round(best, 6)
+    if not slots:
+        return None
+    return {
+        "name": f"{device['name']} ∩ {other['name']}",
+        "cycle": [],
+        "readings": slots,
+        "window": (lo, hi),
+    }
+
+
+def overlap_entries(
+    devices: list[Json],
+    starts: list[str],
+    res: str,
+    rate_by_day: dict[str, float] | None,
+    cutoff: str | None,
+) -> list[Json]:
+    """Bucketed overlap streams for every overlaps_with pair among `devices`.
+
+    Each entry carries "names" (the pair) so the dashboard can add the overlap
+    back exactly once when both devices are being subtracted together.
+    """
+    by_name = {device["name"]: device for device in devices}
+    entries = []
+    for device in devices:
+        for other_name in device["overlaps_with"]:
+            other = by_name.get(other_name)
+            if other is None or other is device:
+                continue
+            pseudo = _overlap_readings(device, other)
+            if pseudo is None:
+                continue
+            entry = device_entry(pseudo, starts, res, rate_by_day, cutoff)
+            entry["names"] = [device["name"], other["name"]]
+            entries.append(entry)
+    return entries
