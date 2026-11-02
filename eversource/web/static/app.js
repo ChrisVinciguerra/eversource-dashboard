@@ -7,11 +7,14 @@
 
 const $ = (id) => document.getElementById(id);
 
+// The filter picks survive reloads.
+const savedRange = localStorage.getItem("range");
 const state = {
   data: null,
-  res: "quarter_hour",   // daily | hourly | quarter_hour
-  metric: "usage",       // usage | cost
-  rangeDays: 1,          // number of days or "all"
+  res: localStorage.getItem("res") || "quarter_hour", // daily | hourly | quarter_hour
+  metric: localStorage.getItem("metric") || "usage",  // usage | cost
+  // number of days or "all"
+  rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1,
 };
 
 const charts = {};        // id -> echarts instance
@@ -495,19 +498,31 @@ function wireSeg(id, attr, onPick) {
   });
 }
 
+function syncSeg(id, attr, value) {
+  $(id).querySelectorAll("button").forEach((b) =>
+    b.classList.toggle("active", b.dataset[attr] === String(value)));
+}
+
 wireSeg("range-seg", "range", (value) => {
+  localStorage.setItem("range", value);
   state.rangeDays = value === "all" ? "all" : Number(value);
   applyRange();
 });
 wireSeg("res-seg", "res", (value) => {
+  localStorage.setItem("res", value);
   state.res = value;
   renderUsage();
   if (!$("usage-table").hidden) fillTable("usage");
 });
 wireSeg("metric-seg", "metric", (value) => {
+  localStorage.setItem("metric", value);
   state.metric = value;
   renderUsage();
 });
+
+syncSeg("range-seg", "range", state.rangeDays);
+syncSeg("res-seg", "res", state.res);
+syncSeg("metric-seg", "metric", state.metric);
 
 // ------------------------------------------------------------ data + jobs --
 
@@ -539,6 +554,10 @@ async function loadData() {
   const anyCost = Object.values(state.data.intervals || {})
     .some((iv) => iv.series.some((s) => s.costs));
   $("metric-seg").hidden = !anyCost;
+  if (!anyCost && state.metric === "cost") {
+    state.metric = "usage";
+    syncSeg("metric-seg", "metric", "usage");
+  }
   renderAll();
 }
 
