@@ -147,6 +147,10 @@ def _interval_payload(frame: pd.DataFrame, has_cost: bool) -> Json:
     """Pack one interval dataset into columnar per-stream series."""
     series = []
     for stream, group in frame.groupby("stream", sort=False):
+        # The frames are sorted by the start *string*, which interleaves the
+        # repeated 1am hour of a DST fall-back day (…01:00-04:00 < …01:00-05:00
+        # < …01:15-04:00); order the points by real time instead.
+        group = group.iloc[pd.to_datetime(group["start"], utc=True).argsort()]
         entry: Json = {
             "name": str(stream),
             "starts": group["start"].tolist(),

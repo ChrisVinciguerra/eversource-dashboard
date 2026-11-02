@@ -9,9 +9,9 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   data: null,
-  res: "daily",          // daily | hourly | quarter_hour
+  res: "quarter_hour",   // daily | hourly | quarter_hour
   metric: "usage",       // usage | cost
-  rangeDays: "all",      // number of days or "all"
+  rangeDays: 1,          // number of days or "all"
 };
 
 const charts = {};        // id -> echarts instance
