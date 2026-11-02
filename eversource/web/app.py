@@ -25,6 +25,7 @@ from .. import progress
 from ..auth import credentials, login
 from ..config import CliError, Json, NoExports, SessionExpired, load_config
 from ..data import cached_payload
+from ..devices import refresh_device_sources
 from ..fetch import run_export, run_update
 
 # How long the sign-in job waits for the MFA code before giving up.
@@ -147,6 +148,13 @@ def api_data() -> Json:
             "last_read": None,
             "note": str(error),
         }
+
+
+@app.post("/api/refresh-devices")
+def api_refresh_devices() -> Json:
+    """Re-pull device specs that name a remote source (best effort, bounded
+    by short timeouts). Runs in FastAPI's threadpool, off the event loop."""
+    return {"changed": refresh_device_sources()}
 
 
 @app.post("/api/update")

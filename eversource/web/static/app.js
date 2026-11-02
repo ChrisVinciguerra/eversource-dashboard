@@ -15,6 +15,8 @@ const state = {
   metric: localStorage.getItem("metric") || "usage",  // usage | cost
   // number of days or "all"
   rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1,
+  // Known devices whose usage is virtually subtracted from the charts.
+  excluded: new Set(JSON.parse(localStorage.getItem("excluded") || "[]")),
 };
 
 const charts = {};        // id -> echarts instance
@@ -122,12 +124,16 @@ function tooltipRows(params, valueFmt) {
     .join("");
 }
 
+// Reuse the instance across renders: updates morph in place instead of
+// replaying the entry animation, and the zoom window survives.
 function makeChart(id) {
-  const el = $(id);
-  if (charts[id]) charts[id].dispose();
-  charts[id] = echarts.init(el, null, { renderer: "canvas" });
+  if (!charts[id]) charts[id] = echarts.init($(id), null, { renderer: "canvas" });
   return charts[id];
 }
+
+// Axes and series are rebuilt wholesale each render, so stale pieces (an
+// axis formatter, a removed series) don't linger through option merging.
+const REPLACE = { replaceMerge: ["xAxis", "yAxis", "series"] };
 window.addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
 
 // ------------------------------------------------------------ usage chart --
@@ -136,12 +142,39 @@ function intervalFor(res) {
   return state.data && state.data.intervals ? state.data.intervals[res] : null;
 }
 
-function seriesPoints(entry, metric) {
+function excludedDevices(res) {
+  const interval = intervalFor(res);
+  if (!interval || !interval.devices) return [];
+  return interval.devices.filter((dev) => state.excluded.has(dev.name));
+}
+
+// Sum of the excluded devices' usage/cost per bucket start (ms), to subtract
+// from each displayed series.
+function excludedOffsets(res) {
+  const map = new Map();
+  for (const dev of excludedDevices(res)) {
+    for (let i = 0; i < dev.starts.length; i++) {
+      const ms = new Date(dev.starts[i]).getTime();
+      const cur = map.get(ms) || { value: 0, cost: 0 };
+      cur.value += dev.values[i] ?? 0;
+      if (dev.costs) cur.cost += dev.costs[i] ?? 0;
+      map.set(ms, cur);
+    }
+  }
+  return map.size ? map : null;
+}
+
+function seriesPoints(entry, metric, offsets) {
   const ys = metric === "cost" ? entry.costs : entry.values;
   if (!ys) return null;
+  const key = metric === "cost" ? "cost" : "value";
   const pts = new Array(entry.starts.length);
   for (let i = 0; i < entry.starts.length; i++) {
-    pts[i] = [new Date(entry.starts[i]).getTime(), ys[i]];
+    const ms = new Date(entry.starts[i]).getTime();
+    let y = ys[i];
+    const off = offsets && y != null ? offsets.get(ms) : null;
+    if (off) y = Math.round((y - off[key]) * 1e6) / 1e6;
+    pts[i] = [ms, y];
   }
   return pts;
 }
@@ -149,6 +182,7 @@ function seriesPoints(entry, metric) {
 function renderUsage() {
   const t = tokens();
   const interval = intervalFor(state.res);
+  const fresh = !charts["usage-chart"];
   const chart = makeChart("usage-chart");
   if (!interval) return;
 
@@ -157,9 +191,10 @@ function renderUsage() {
   const unitLabel = metric === "cost" ? "$" : interval.unit;
   const valueFmt = metric === "cost" ? (x) => fmtUsd(x, isDaily ? 2 : 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
 
+  const offsets = excludedOffsets(state.res);
   const series = interval.series
     .map((entry) => {
-      const pts = seriesPoints(entry, metric);
+      const pts = seriesPoints(entry, metric, offsets);
       if (!pts) return null;
       return isDaily
         ? {
@@ -197,12 +232,56 @@ function renderUsage() {
       textStyle: { color: t.muted, fontSize: 10.5 },
     },
   ];
-  chart.setOption(opt);
-  applyRange();
+  chart.setOption(opt, REPLACE);
+  // Only a brand-new chart gets the saved range; re-renders (chip, metric,
+  // theme, resolution) keep whatever window the user is looking at.
+  if (fresh) {
+    chart.on("datazoom", updateWindowSum);
+    applyRange();
+  }
+  updateWindowSum();
 
+  const minus = excludedDevices(state.res).map((dev) => ` − ${dev.name}`).join("");
   $("usage-title").textContent =
     ({ daily: "Daily", hourly: "Hourly", quarter_hour: "15-minute" }[state.res]) +
-    (metric === "cost" ? " cost" : " usage") + ` · ${unitLabel}`;
+    (metric === "cost" ? " cost" : " usage") + minus + ` · ${unitLabel}`;
+}
+
+// Usage and cost summed over the chart's visible window (exclusions applied).
+function windowTotals() {
+  const chart = charts["usage-chart"];
+  const interval = intervalFor(state.res);
+  if (!chart || !interval || !interval.series.length) return null;
+  const dz = (chart.getOption().dataZoom || [])[0];
+  if (!dz) return null;
+  const allMs = interval.series.flatMap((e) =>
+    [new Date(e.starts[0]).getTime(), new Date(e.starts[e.starts.length - 1]).getTime()]);
+  const lo = Math.min(...allMs), hi = Math.max(...allMs);
+  // The zoom window is stored as values when set by value, percents otherwise.
+  const from = dz.startValue ?? lo + ((dz.start ?? 0) / 100) * (hi - lo);
+  const to = dz.endValue ?? lo + ((dz.end ?? 100) / 100) * (hi - lo);
+  const offsets = excludedOffsets(state.res);
+  let usage = 0, cost = 0, hasCost = false;
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      const ms = new Date(entry.starts[i]).getTime();
+      if (ms < from || ms > to) continue;
+      const off = offsets ? offsets.get(ms) : null;
+      if (entry.values[i] != null) usage += entry.values[i] - (off ? off.value : 0);
+      if (entry.costs && entry.costs[i] != null) {
+        cost += entry.costs[i] - (off ? off.cost : 0);
+        hasCost = true;
+      }
+    }
+  }
+  return { usage, cost: hasCost ? cost : null, unit: interval.unit };
+}
+
+function updateWindowSum() {
+  const t = windowTotals();
+  $("window-sum").textContent = t
+    ? `${fmtNum(t.usage)} ${t.unit}${t.cost != null ? ` · ${fmtUsd(t.cost)}` : ""} in view`
+    : "";
 }
 
 function applyRange() {
@@ -267,7 +346,7 @@ function renderCategoryBars(id, rows, groupKey, xKey, yKey, valueFmt, yName) {
     return `<div style="color:${t.textSecondary}">Period ending ${esc(period)}</div>` +
       tooltipRows(params, valueFmt);
   };
-  chart.setOption(opt);
+  chart.setOption(opt, REPLACE);
   return chart;
 }
 
@@ -307,6 +386,15 @@ function dailyTotals() {
       cur.value += entry.values[i] ?? 0;
       if (entry.costs && entry.costs[i] != null) { cur.cost += entry.costs[i]; cur.hasCost = true; }
       byDay.set(day, cur);
+    }
+  }
+  // Excluded devices come off the day totals once (not once per stream).
+  for (const dev of excludedDevices("daily")) {
+    for (let i = 0; i < dev.starts.length; i++) {
+      const cur = byDay.get(dev.starts[i].slice(0, 10));
+      if (!cur) continue;
+      cur.value -= dev.values[i] ?? 0;
+      if (cur.hasCost && dev.costs) cur.cost -= dev.costs[i] ?? 0;
     }
   }
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
@@ -434,12 +522,16 @@ function fillTable(name) {
   if (name === "usage") {
     const interval = intervalFor(state.res);
     if (!interval) return;
+    const offsets = excludedOffsets(state.res);
     const rows = [];
     for (const entry of interval.series) {
       for (let i = 0; i < entry.starts.length; i++) {
+        const off = offsets ? offsets.get(new Date(entry.starts[i]).getTime()) : null;
         rows.push({
           start: entry.starts[i], stream: entry.name,
-          value: entry.values[i], cost: entry.costs ? entry.costs[i] : null,
+          value: entry.values[i] == null || !off ? entry.values[i] : entry.values[i] - off.value,
+          cost: !entry.costs || entry.costs[i] == null ? null
+            : off ? entry.costs[i] - off.cost : entry.costs[i],
         });
       }
     }
@@ -524,6 +616,33 @@ syncSeg("range-seg", "range", state.rangeDays);
 syncSeg("res-seg", "res", state.res);
 syncSeg("metric-seg", "metric", state.metric);
 
+// One chip per known device (devices/*.json); active = subtracted from charts.
+function renderDeviceChips() {
+  const names = [...new Set(
+    Object.values(state.data.intervals || {})
+      .flatMap((iv) => iv.devices || [])
+      .map((dev) => dev.name),
+  )];
+  const root = $("device-chips");
+  root.textContent = "";
+  root.hidden = !names.length;
+  for (const name of names) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `− ${name}`;
+    btn.title = `Subtract ${name} from the charts`;
+    btn.classList.toggle("active", state.excluded.has(name));
+    btn.addEventListener("click", () => {
+      state.excluded[state.excluded.has(name) ? "delete" : "add"](name);
+      localStorage.setItem("excluded", JSON.stringify([...state.excluded]));
+      btn.classList.toggle("active", state.excluded.has(name));
+      renderAll();
+      if (!$("usage-table").hidden) fillTable("usage");
+    });
+    root.append(btn);
+  }
+}
+
 // ------------------------------------------------------------ data + jobs --
 
 function renderAll() {
@@ -558,6 +677,7 @@ async function loadData() {
     state.metric = "usage";
     syncSeg("metric-seg", "metric", "usage");
   }
+  renderDeviceChips();
   renderAll();
 }
 
@@ -680,8 +800,21 @@ function dataIsStale() {
   return state.data.last_read.slice(0, 10) < localDay(today);
 }
 
+// Re-pull device specs that name a remote source (the server may be asleep,
+// so this runs after first paint and quietly keeps the cached specs on
+// failure); reload if anything actually changed.
+async function refreshDevices() {
+  try {
+    const result = await (await fetch("/api/refresh-devices", { method: "POST" })).json();
+    if (result.changed) await loadData();
+  } catch {
+    /* best effort */
+  }
+}
+
 async function init() {
   await loadData();
+  refreshDevices();
   const job = await (await fetch("/api/job")).json();
   if (job.running) {
     pollJob();
