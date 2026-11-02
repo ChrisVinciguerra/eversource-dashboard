@@ -18,6 +18,7 @@ TZ = ZoneInfo("America/New_York")
 ES = "https://www.eversource.com"
 LOGIN_URL = f"{ES}/security/account/login"
 MSLOGIN_URL = f"{ES}/security/account/MSLogin"
+MFALOGIN_URL = f"{ES}/security/account/MFALogin"
 MSLOGIN_RETURN_URL = "/cg/customer/accountoverview"
 ACCOUNT_URL = f"{ES}/cg/customer/Account"
 OPOWER_GQL = "https://ever.opower.com/ei/edge/apis/dsm-graphql-v1/cws/graphql"

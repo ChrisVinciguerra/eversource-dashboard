@@ -312,9 +312,18 @@ class Client:
         cached: JwtCache | None = self.cfg.get("jwt", {}).get(str(billing_account))
         if cached and cached["exp"] - 60 > time.time():
             return cached["token"]
-        data = self.es_get(
-            f"/cg/customer/api/accountbilling/getOpowerWidgetData/{billing_account}"
-        )
+        path = f"/cg/customer/api/accountbilling/getOpowerWidgetData/{billing_account}"
+        data = self.es_get(path)
+        if not data or not data.get("jwtToken"):
+            # A session missing the web cookies gets a 200 "null" here rather
+            # than a 401; a fresh sign-in fixes it.
+            self._reauth()
+            data = self.es_get(path)
+        if not data or not data.get("jwtToken"):
+            raise SessionExpired(
+                f"Eversource returned no Opower token for account "
+                f"{billing_account}. {RELOGIN_HINT}"
+            )
         token = data["jwtToken"]
         payload = json.loads(
             base64.urlsafe_b64decode(token.split(".")[1] + "==").decode()

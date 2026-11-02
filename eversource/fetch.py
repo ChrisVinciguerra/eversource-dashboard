@@ -247,7 +247,13 @@ def fetch_quarter_hour(
 
 def aggregate(quarter: pd.DataFrame, freq: str) -> pd.DataFrame:
     """Sum 15-min reads into hourly ('h') or daily ('D') buckets, local time."""
-    bucket = pd.to_datetime(quarter["start"], utc=True).dt.tz_convert(TZ).dt.floor(freq)
+    ts = pd.to_datetime(quarter["start"], utc=True)
+    # Floor hours in UTC and days via normalize(): flooring local wall times
+    # raises on the repeated 1am hour of a DST fall-back day. Hour boundaries
+    # match in UTC and local time; local midnight is never ambiguous.
+    bucket = ts.dt.floor(freq).dt.tz_convert(TZ) if freq == "h" else (
+        ts.dt.tz_convert(TZ).dt.normalize()
+    )
     out = (
         quarter.assign(start=bucket)
         .groupby(["billing_account", "meter", "stream", "start"], as_index=False)
