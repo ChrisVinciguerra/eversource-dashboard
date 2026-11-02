@@ -253,6 +253,51 @@ main {
 .chart-sm { height: 280px; }
 .chart.loading { opacity: 0.55; transition: opacity 0.2s; }
 
+/* Fine zoom: a magnified neighborhood of the selected window, shown when the
+   window is too small a slice of the full range to grab on the main slider. */
+.zoom-fine {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 4px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.zoom-fine-edge:last-child { text-align: right; }
+.zoom-fine-track {
+  position: relative;
+  flex: 1;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--page);
+  box-shadow: inset 0 0 0 1px var(--gridline);
+  touch-action: none;
+  cursor: pointer;
+}
+.zoom-fine-win {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--series-1) 14%, transparent);
+  cursor: grab;
+}
+.zoom-fine-win:active { cursor: grabbing; }
+.zoom-fine-handle {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  margin-left: -5px;
+  border-radius: 5px;
+  background: var(--surface-1);
+  border: 1px solid var(--baseline);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 15%);
+  cursor: ew-resize;
+}
+.zoom-fine-handle:hover { border-color: var(--series-1); }
+
 /* -------------------------------------------------------------- table --- */
 
 .table-wrap { max-height: 380px; overflow: auto; margin-top: 6px; }

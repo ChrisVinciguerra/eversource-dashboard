@@ -236,10 +236,11 @@ function renderUsage() {
   // Only a brand-new chart gets the saved range; re-renders (chip, metric,
   // theme, resolution) keep whatever window the user is looking at.
   if (fresh) {
-    chart.on("datazoom", updateWindowSum);
+    chart.on("datazoom", () => { updateWindowSum(); syncZoomFine(); });
     applyRange();
   }
   updateWindowSum();
+  syncZoomFine();
 
   const minus = excludedDevices(state.res).map((dev) => ` − ${dev.name}`).join("");
   $("usage-title").textContent =
@@ -247,8 +248,8 @@ function renderUsage() {
     (metric === "cost" ? " cost" : " usage") + minus + ` · ${unitLabel}`;
 }
 
-// Usage and cost summed over the chart's visible window (exclusions applied).
-function windowTotals() {
+// The visible zoom window plus the full data extent, all in epoch ms.
+function currentWindow() {
   const chart = charts["usage-chart"];
   const interval = intervalFor(state.res);
   if (!chart || !interval || !interval.series.length) return null;
@@ -260,6 +261,15 @@ function windowTotals() {
   // The zoom window is stored as values when set by value, percents otherwise.
   const from = dz.startValue ?? lo + ((dz.start ?? 0) / 100) * (hi - lo);
   const to = dz.endValue ?? lo + ((dz.end ?? 100) / 100) * (hi - lo);
+  return { from, to, lo, hi };
+}
+
+// Usage and cost summed over the chart's visible window (exclusions applied).
+function windowTotals() {
+  const interval = intervalFor(state.res);
+  const win = currentWindow();
+  if (!win) return null;
+  const { from, to } = win;
   const offsets = excludedOffsets(state.res);
   let usage = 0, cost = 0, hasCost = false;
   for (const entry of interval.series) {
@@ -300,6 +310,91 @@ function applyRange() {
     });
   }
 }
+
+// ---------------------------------------------------------- fine zoom strip --
+// On the main slider both handles collapse into the same few pixels once the
+// window is a sliver of the full range. This strip magnifies the window's
+// neighborhood (one window-width of context per side) so start and end stay
+// far enough apart to grab one at a time. It re-centers after each drag.
+
+const FINE_SHOW_BELOW = 0.25; // show once the window is under 25% of the range
+const fine = { lo: 0, hi: 0, drag: null };
+
+const resMs = () =>
+  ({ daily: 86400e3, hourly: 3600e3, quarter_hour: 900e3 }[state.res]);
+
+function syncZoomFine() {
+  const el = $("zoom-fine");
+  const win = currentWindow();
+  const span = win ? win.hi - win.lo : 0;
+  const width = win ? win.to - win.from : 0;
+  const show = span > 0 && width > 0 && width / span < FINE_SHOW_BELOW;
+  el.hidden = !show;
+  if (!show) return;
+  // Freeze the magnified extent mid-drag so the ground doesn't shift underfoot.
+  if (!fine.drag) {
+    const pad = Math.max(width, resMs() * 4);
+    fine.lo = Math.max(win.lo, win.from - pad);
+    fine.hi = Math.min(win.hi, win.to + pad);
+  }
+  const pct = (ms) =>
+    Math.max(0, Math.min(100, ((ms - fine.lo) / (fine.hi - fine.lo)) * 100));
+  const a = pct(win.from), b = pct(win.to);
+  $("zoom-fine-win").style.left = a + "%";
+  $("zoom-fine-win").style.width = (b - a) + "%";
+  $("zoom-fine-start").style.left = a + "%";
+  $("zoom-fine-end").style.left = b + "%";
+  $("zoom-fine-lo").textContent = fmtStamp(fine.lo, state.res);
+  $("zoom-fine-hi").textContent = fmtStamp(fine.hi, state.res);
+}
+
+$("zoom-fine-track").addEventListener("pointerdown", (event) => {
+  const win = currentWindow();
+  if (!win) return;
+  const track = $("zoom-fine-track");
+  const rect = track.getBoundingClientRect();
+  const msAt = (x) => fine.lo + ((x - rect.left) / rect.width) * (fine.hi - fine.lo);
+
+  let mode;
+  if (event.target === $("zoom-fine-start")) mode = "start";
+  else if (event.target === $("zoom-fine-end")) mode = "end";
+  else if (event.target === $("zoom-fine-win")) mode = "pan";
+  // Bare track: the click moves whichever handle is nearer.
+  else mode = Math.abs(msAt(event.clientX) - win.from) <=
+              Math.abs(msAt(event.clientX) - win.to) ? "start" : "end";
+
+  fine.drag = { mode, grabFrom: win.from, grabTo: win.to, grabX: event.clientX };
+  track.setPointerCapture(event.pointerId);
+
+  const apply = (clientX) => {
+    const minGap = resMs();
+    let { from, to } = currentWindow();
+    if (fine.drag.mode === "pan") {
+      const dMs = ((clientX - fine.drag.grabX) / rect.width) * (fine.hi - fine.lo);
+      const width = fine.drag.grabTo - fine.drag.grabFrom;
+      from = Math.max(fine.lo, Math.min(fine.hi - width, fine.drag.grabFrom + dMs));
+      to = from + width;
+    } else {
+      const ms = Math.max(fine.lo, Math.min(fine.hi, msAt(clientX)));
+      if (fine.drag.mode === "start") from = Math.min(ms, to - minGap);
+      else to = Math.max(ms, from + minGap);
+    }
+    charts["usage-chart"].dispatchAction({ type: "dataZoom", startValue: from, endValue: to });
+  };
+
+  apply(event.clientX);
+  const move = (ev) => apply(ev.clientX);
+  const up = () => {
+    track.removeEventListener("pointermove", move);
+    track.removeEventListener("pointerup", up);
+    track.removeEventListener("pointercancel", up);
+    fine.drag = null;
+    syncZoomFine(); // re-center the magnified extent on the final window
+  };
+  track.addEventListener("pointermove", move);
+  track.addEventListener("pointerup", up);
+  track.addEventListener("pointercancel", up);
+});
 
 // --------------------------------------------------- monthly + bills charts --
 

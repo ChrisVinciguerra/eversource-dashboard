@@ -92,6 +92,15 @@
       <button type="button" class="btn btn-ghost table-toggle" data-for="usage">Table</button>
     </div>
     <div class="chart" id="usage-chart"></div>
+    <div class="zoom-fine" id="zoom-fine" hidden>
+      <span class="zoom-fine-edge" id="zoom-fine-lo"></span>
+      <div class="zoom-fine-track" id="zoom-fine-track" aria-label="Fine-adjust time window">
+        <div class="zoom-fine-win" id="zoom-fine-win"></div>
+        <div class="zoom-fine-handle" id="zoom-fine-start"></div>
+        <div class="zoom-fine-handle" id="zoom-fine-end"></div>
+      </div>
+      <span class="zoom-fine-edge" id="zoom-fine-hi"></span>
+    </div>
     <div class="table-wrap" id="usage-table" hidden></div>
   </section>
 
