@@ -185,4 +185,13 @@ def api_job() -> Json:
     return _job.state() if _job is not None else {"kind": None, "running": False}
 
 
+@app.middleware("http")
+async def revalidate_static(request, call_next):
+    """Make browsers revalidate static files (ETag 304s), not heuristically
+    cache them — a stale app.js against a fresh index.html breaks the page."""
+    response = await call_next(request)
+    response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
