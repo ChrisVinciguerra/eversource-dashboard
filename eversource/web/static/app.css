@@ -220,6 +220,8 @@ main {
   font-weight: 600;
   box-shadow: inset 0 0 0 1px var(--border);
 }
+/* Device chips: active means the device's usage is subtracted out. */
+.chips button.active { text-decoration: line-through; }
 
 /* -------------------------------------------------------------- cards --- */
 
@@ -236,6 +238,12 @@ main {
   margin-bottom: 4px;
 }
 .card-head h2 { font-size: 15px; font-weight: 650; margin: 0; }
+.window-sum {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  margin-left: auto;
+  margin-right: 12px;
+}
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));

@@ -17,5 +17,8 @@ exports/
 eversource_export_*/
 *.csv
 
+# Device definitions (describe your home; may embed private hostnames)
+devices/*.json
+
 # macOS
 .DS_Store

@@ -13,7 +13,15 @@ from typing import Any
 
 import pandas as pd
 
-from .config import EXPORT_FIRST_HINT, EXPORT_GLOB, EXPORT_ROOT, Json, NoExports
+from .config import (
+    DEVICE_ROOT,
+    EXPORT_FIRST_HINT,
+    EXPORT_GLOB,
+    EXPORT_ROOT,
+    Json,
+    NoExports,
+)
+from .devices import device_entry, load_devices
 from .progress import emit
 
 # Dedup keys per dataset: rows matching on these are the same observation, and
@@ -100,16 +108,20 @@ def unit_of(frame: pd.DataFrame) -> str:
     return str(frame["unit"].iloc[0])
 
 
-def add_effective_rate_cost(frame: pd.DataFrame, bills: pd.DataFrame | None) -> bool:
+def add_effective_rate_cost(
+    frame: pd.DataFrame, bills: pd.DataFrame | None
+) -> dict[str, float] | None:
     """Add cost_usd per read: usage × its billing period's effective rate.
 
     The rate is total bill / billed usage, so fixed charges are spread in.
+    Returns the day -> rate mapping used (None when no bills matched), so
+    derived series (known devices) can be costed the same way.
     """
     if bills is None:
-        return False
+        return None
     billed = bills[(bills["unit"] == unit_of(frame)) & (bills["usage"] > 0)]
     if billed.empty:
-        return False
+        return None
     billed = billed.sort_values("period_start")
     rates = pd.DataFrame(
         {
@@ -125,7 +137,7 @@ def add_effective_rate_cost(frame: pd.DataFrame, bills: pd.DataFrame | None) -> 
     rate_by_day = dict(zip(matched["day"], matched["rate"].bfill()))
     frame["effective_rate_usd"] = frame["start"].str[:10].map(rate_by_day).round(4)
     frame["cost_usd"] = (frame["value"] * frame["effective_rate_usd"]).round(5)
-    return True
+    return rate_by_day
 
 
 # ----------------------------------------------------------- JSON payload ---
@@ -168,6 +180,11 @@ def build_payload() -> Json:
     normalize_display_values(data)
     keep_net_usage_only(data)
     bills = data.get("bills")
+    devices = load_devices()
+    # End of the last actual read (finest dataset wins), capping the device
+    # patterns so partial buckets don't over-subtract.
+    finest = next((data[n] for n in reversed(INTERVAL_DATASETS) if n in data), None)
+    cutoff = str(finest["end"].max()) if finest is not None else None
 
     intervals: Json = {}
     last_read: str | None = None
@@ -175,8 +192,14 @@ def build_payload() -> Json:
         frame = data.get(name)
         if frame is None:
             continue
-        has_cost = add_effective_rate_cost(frame, bills)
-        intervals[name] = _interval_payload(frame, has_cost)
+        rate_by_day = add_effective_rate_cost(frame, bills)
+        intervals[name] = _interval_payload(frame, rate_by_day is not None)
+        if devices and unit_of(frame) == "kWh":
+            starts = sorted(set(frame["start"]))
+            intervals[name]["devices"] = [
+                device_entry(device, starts, name, rate_by_day, cutoff)
+                for device in devices
+            ]
         # Finest dataset wins (the loop is coarsest-first): a partial day's
         # daily bucket "ends" at the next midnight, past the actual reads.
         last_read = frame["end"].max() or last_read
@@ -189,18 +212,22 @@ def build_payload() -> Json:
     }
 
 
-# The merge is pure function of the CSV files, so cache on their stats.
+# The merge is a pure function of the CSV and device files, so cache on their
+# stats.
 _cache: tuple[tuple[tuple[str, float, int], ...], Json] | None = None
 
 
 def _signature() -> tuple[tuple[str, float, int], ...]:
+    files = [
+        path
+        for folder in EXPORT_ROOT.glob(EXPORT_GLOB)
+        if folder.is_dir()
+        for path in folder.glob("*.csv")
+    ]
+    if DEVICE_ROOT.is_dir():
+        files.extend(DEVICE_ROOT.glob("*.json"))
     return tuple(
-        sorted(
-            (str(path), path.stat().st_mtime, path.stat().st_size)
-            for folder in EXPORT_ROOT.glob(EXPORT_GLOB)
-            if folder.is_dir()
-            for path in folder.glob("*.csv")
-        )
+        sorted((str(path), path.stat().st_mtime, path.stat().st_size) for path in files)
     )
 
 

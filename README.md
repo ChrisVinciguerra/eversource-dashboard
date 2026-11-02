@@ -53,6 +53,7 @@ there — it goes in the macOS keychain under the service `eversource-cli`.
   - `client.py` — authenticated Eversource/Opower client
   - `fetch.py` — fetching reads/bills and writing export folders
   - `data.py` — merging export folders and shaping the dashboard payload
+  - `devices.py` — known-device streams: loading, remote sources, expansion
   - `cli.py` — the command-line interface
   - `web/` — FastAPI app (`app.py`) and the static dashboard page (`static/`)
 
@@ -101,6 +102,55 @@ Light and dark themes follow the OS (toggleable in the header).
 For a double-clickable launcher, `scripts/make_desktop_app.sh` creates
 `~/Desktop/Energy.app` (icon in `assets/`): it starts the dashboard, or just
 opens the browser if the server is already running.
+
+### Known devices
+
+Loads whose usage you know can be defined in `devices/*.json`, one file per
+device (gitignored — see **[devices/README.md](devices/README.md)** for the
+full format). The simplest device is a hand-written repeating pattern:
+
+```json
+{
+  "name": "Fridge",
+  "pattern": { "values_kwh": [0.01, 0.02] }
+}
+```
+
+`values_kwh` is the device's kWh in each 15-minute slot; the list repeats
+indefinitely, aligned to local midnight (so a 96-entry list describes one full
+day). The dashboard shows a filter chip per device ("− Fridge") that virtually
+subtracts its usage — and its cost, at the billing period's effective rate —
+from the interval charts, the usage table, and the summary tiles, letting you
+see what's left after the loads you already understand.
+
+A device that actually measures itself can carry `readings` instead: actual
+kWh per 15-minute slot keyed by local start time, with a coverage window.
+Inside the window the dashboard subtracts what the device really drew (a
+missing slot means it was off); outside it, the `pattern` fallback applies.
+
+A device file can also point at a remote source instead of carrying the data:
+
+```json
+{
+  "source": "myserver:/var/lib/power/device.json"
+}
+```
+
+`source` is a local path, an ssh `host:path`, or an `http(s)://` URL serving
+the same device document — e.g. a machine that measures its own power draw and
+publishes its readings. Every time the dashboard is opened it re-pulls each
+source in the background and writes the fetched document back into the file,
+so it doubles as a cache: if the source is unreachable (host asleep, network
+down) the chips keep working from the last successful fetch. Timeouts are
+short, and a changed document re-renders the page on its own a moment after
+load.
+
+To record the Mac the dashboard runs on as a device (Apple Silicon),
+`scripts/install_mac_power_agent.sh` installs a launchd agent running
+`scripts/mac_power_recorder.py`: it samples the wall input power from the
+battery telemetry once every 30 s, estimates charging that happened while
+asleep from the battery charge delta, and publishes a device document that
+`devices/mac.json` points at as its source.
 
 ## CLI usage
 

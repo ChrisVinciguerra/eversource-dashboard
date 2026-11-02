@@ -42,6 +42,10 @@ KEYCHAIN_SERVICE = "eversource-cli"
 EXPORT_ROOT = Path(__file__).resolve().parent.parent / "exports"
 EXPORT_GLOB = "eversource_export_*"
 
+# Known-device definitions (devices/*.json) live beside the exports; each one
+# names a load whose usage can be virtually subtracted in the dashboard.
+DEVICE_ROOT = EXPORT_ROOT.parent / "devices"
+
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"

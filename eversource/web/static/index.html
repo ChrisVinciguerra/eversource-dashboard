@@ -82,11 +82,13 @@
       <button type="button" data-metric="usage" class="active">Usage</button>
       <button type="button" data-metric="cost">Cost</button>
     </div>
+    <div class="seg chips" id="device-chips" role="group" aria-label="Subtract known devices" hidden></div>
   </section>
 
   <section class="card" id="usage-card">
     <div class="card-head">
       <h2 id="usage-title">Usage</h2>
+      <span id="window-sum" class="window-sum"></span>
       <button type="button" class="btn btn-ghost table-toggle" data-for="usage">Table</button>
     </div>
     <div class="chart" id="usage-chart"></div>
