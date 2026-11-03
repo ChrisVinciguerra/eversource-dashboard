@@ -13,6 +13,11 @@ const state = {
   data: null,
   res: localStorage.getItem("res") || "quarter_hour", // daily | hourly | quarter_hour
   metric: localStorage.getItem("metric") || "usage",  // usage | cost
+  // How the usage chart breaks down known devices:
+  //   total   — one net series (devices only show up via the subtract chips)
+  //   stacked — each device plus "Everything else", stacked to the total
+  //   lines   — each device plus "Everything else" as separate series
+  view: localStorage.getItem("view") || "total",
   // number of days or "all"
   rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1,
   // Known devices whose usage is virtually subtracted from the charts.
@@ -175,6 +180,84 @@ function excludedOffsets(res) {
   return map.size ? map : null;
 }
 
+// Known-device names in a stable order, shared by the chart's component
+// series and the filter chips so both map a device to the same palette slot:
+// "Everything else" takes slot 0, device i takes slot i + 1 (cycling).
+// Toggling a chip therefore never reshuffles colors.
+function deviceNames() {
+  return [...new Set(
+    Object.values(state.data.intervals || {})
+      .flatMap((iv) => iv.devices || [])
+      .map((dev) => dev.name),
+  )];
+}
+
+function paletteSlot(name) {
+  return name === "Everything else" ? 0 : deviceNames().indexOf(name) + 1;
+}
+
+// Device streams with doubly-metered energy attributed exactly once: each
+// overlap comes off the first-named device (the meter that also saw another
+// known device's draw), so stacking the components never double-counts.
+function componentEntries(res) {
+  const interval = intervalFor(res);
+  if (!interval || !interval.devices) return [];
+  const overlaps = interval.overlaps || [];
+  return interval.devices.map((dev) => {
+    const mine = overlaps.filter((o) => o.names[0] === dev.name);
+    if (!mine.length) return dev;
+    const values = dev.values.slice();
+    const costs = dev.costs ? dev.costs.slice() : null;
+    const indexOf = new Map(dev.starts.map((s, i) => [s, i]));
+    for (const o of mine) {
+      for (let i = 0; i < o.starts.length; i++) {
+        const j = indexOf.get(o.starts[i]);
+        if (j == null) continue;
+        if (values[j] != null)
+          values[j] = Math.round((values[j] - (o.values[i] ?? 0)) * 1e6) / 1e6;
+        if (costs && o.costs && costs[j] != null)
+          costs[j] = Math.round((costs[j] - (o.costs[i] ?? 0)) * 1e6) / 1e6;
+      }
+    }
+    return costs ? { ...dev, values, costs } : { ...dev, values };
+  });
+}
+
+// "Everything else": the metered total minus every known device (excluded or
+// not — a device hidden by its chip disappears from the chart rather than
+// melting back into the remainder).
+function remainderEntry(res, comps) {
+  const interval = intervalFor(res);
+  if (!interval || !interval.series.length) return null;
+  const totals = new Map(); // ISO start -> { value, cost }
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      const cur = totals.get(entry.starts[i]) || { value: null, cost: null };
+      if (entry.values[i] != null) cur.value = (cur.value ?? 0) + entry.values[i];
+      if (entry.costs && entry.costs[i] != null) cur.cost = (cur.cost ?? 0) + entry.costs[i];
+      totals.set(entry.starts[i], cur);
+    }
+  }
+  for (const dev of comps) {
+    for (let i = 0; i < dev.starts.length; i++) {
+      const cur = totals.get(dev.starts[i]);
+      if (!cur) continue;
+      if (cur.value != null) cur.value -= dev.values[i] ?? 0;
+      if (cur.cost != null && dev.costs) cur.cost -= dev.costs[i] ?? 0;
+    }
+  }
+  const starts = [...totals.keys()].sort();
+  const round = (x) => (x == null ? null : Math.round(x * 1e6) / 1e6);
+  const entry = {
+    name: "Everything else",
+    starts,
+    values: starts.map((k) => round(totals.get(k).value)),
+  };
+  if (starts.some((k) => totals.get(k).cost != null))
+    entry.costs = starts.map((k) => round(totals.get(k).cost));
+  return entry;
+}
+
 function seriesPoints(entry, metric, offsets) {
   const ys = metric === "cost" ? entry.costs : entry.values;
   if (!ys) return null;
@@ -202,26 +285,49 @@ function renderUsage() {
   const unitLabel = metric === "cost" ? "$" : interval.unit;
   const valueFmt = metric === "cost" ? (x) => fmtUsd(x, isDaily ? 2 : 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
 
-  const offsets = excludedOffsets(state.res);
-  const series = interval.series
+  const comps = componentEntries(state.res);
+  const split = state.view !== "total" && comps.length > 0;
+  const stacked = split && state.view === "stacked";
+
+  // In the component views each entry is already a component, so the
+  // exclusion offsets don't apply — a chipped device is simply left out.
+  let entries, offsets;
+  if (split) {
+    const rem = remainderEntry(state.res, comps);
+    entries = [rem, ...comps.filter((dev) => !state.excluded.has(dev.name))].filter(Boolean);
+    offsets = null;
+  } else {
+    entries = interval.series;
+    offsets = excludedOffsets(state.res);
+  }
+
+  const colors = [];
+  const series = entries
     .map((entry) => {
       const pts = seriesPoints(entry, metric, offsets);
       if (!pts) return null;
+      colors.push(t.series[paletteSlot(entry.name) % t.series.length]);
       return isDaily
         ? {
             name: entry.name, type: "bar", data: pts,
             barMaxWidth: 24,
-            itemStyle: { borderRadius: [4, 4, 0, 0] },
+            stack: stacked ? "components" : undefined,
+            itemStyle: { borderRadius: stacked ? 0 : [4, 4, 0, 0] },
           }
         : {
             name: entry.name, type: "line", data: pts,
-            showSymbol: false, sampling: "lttb",
+            showSymbol: false,
+            // Sampling would misalign the stacked buckets, so skip it there.
+            sampling: stacked ? undefined : "lttb",
+            stack: stacked ? "components" : undefined,
+            areaStyle: stacked ? { opacity: 0.35 } : undefined,
             lineStyle: { width: 2 }, symbolSize: 8,
           };
     })
     .filter(Boolean);
 
   const opt = baseOption(t);
+  if (split) opt.color = colors;
   opt.xAxis.type = "time";
   opt.yAxis.name = metric === "cost" ? "Cost ($)" : `Usage (${interval.unit})`;
   opt.yAxis.nameTextStyle = { color: t.textSecondary, align: "left" };
@@ -230,8 +336,15 @@ function renderUsage() {
   opt.legend = legendFor(series, t, { right: 48 });
   opt.tooltip.formatter = (params) => {
     if (!params.length) return "";
+    const rows = params.filter((p) => p.value != null && p.value[1] != null);
+    const total = split && rows.length > 1
+      ? `<div style="margin-top:4px;padding-top:3px;border-top:1px solid ${t.gridline}">
+           <strong>${esc(valueFmt(rows.reduce((sum, p) => sum + p.value[1], 0)))}</strong>
+           <span style="opacity:.75">Total</span>
+         </div>`
+      : "";
     return `<div style="color:${t.textSecondary}">${esc(fmtStamp(params[0].value[0], state.res))}</div>` +
-      tooltipRows(params, valueFmt);
+      tooltipRows(params, valueFmt) + total;
   };
   opt.dataZoom = [
     { type: "inside", xAxisIndex: 0 },
@@ -256,7 +369,8 @@ function renderUsage() {
   const minus = excludedDevices(state.res).map((dev) => ` − ${dev.name}`).join("");
   $("usage-title").textContent =
     ({ daily: "Daily", hourly: "Hourly", quarter_hour: "15-minute" }[state.res]) +
-    (metric === "cost" ? " cost" : " usage") + minus + ` · ${unitLabel}`;
+    (metric === "cost" ? " cost" : " usage") +
+    (split ? " by device" : "") + minus + ` · ${unitLabel}`;
 }
 
 // The visible zoom window plus the full data extent, all in epoch ms.
@@ -720,25 +834,34 @@ wireSeg("metric-seg", "metric", (value) => {
   state.metric = value;
   renderUsage();
 });
+wireSeg("view-seg", "view", (value) => {
+  localStorage.setItem("view", value);
+  state.view = value;
+  renderUsage();
+});
 
 syncSeg("range-seg", "range", state.rangeDays);
 syncSeg("res-seg", "res", state.res);
 syncSeg("metric-seg", "metric", state.metric);
+syncSeg("view-seg", "view", state.view);
 
 // One chip per known device (devices/*.json); active = subtracted from charts.
 function renderDeviceChips() {
-  const names = [...new Set(
-    Object.values(state.data.intervals || {})
-      .flatMap((iv) => iv.devices || [])
-      .map((dev) => dev.name),
-  )];
+  const names = deviceNames();
   const root = $("device-chips");
   root.textContent = "";
   root.hidden = !names.length;
+  $("view-seg").hidden = !names.length;
   for (const name of names) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = `− ${name}`;
+    // Same palette slot as the device's series, so chip and legend match.
+    const dot = document.createElement("span");
+    dot.className = "chip-dot";
+    dot.style.background = `var(--series-${(paletteSlot(name) % 4) + 1})`;
+    const label = document.createElement("span");
+    label.textContent = `− ${name}`;
+    btn.append(dot, label);
     btn.title = `Subtract ${name} from the charts`;
     btn.classList.toggle("active", state.excluded.has(name));
     btn.addEventListener("click", () => {
