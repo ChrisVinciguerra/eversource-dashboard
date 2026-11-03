@@ -389,12 +389,10 @@ function currentWindow() {
   return { from, to, lo, hi };
 }
 
-// Usage and cost summed over the chart's visible window (exclusions applied).
-function windowTotals() {
+// Usage and cost summed over [from, to] ms, inclusive (exclusions applied).
+function rangeTotals(from, to) {
   const interval = intervalFor(state.res);
-  const win = currentWindow();
-  if (!win) return null;
-  const { from, to } = win;
+  if (!interval) return null;
   const offsets = excludedOffsets(state.res);
   let usage = 0, cost = 0, hasCost = false;
   for (const entry of interval.series) {
@@ -412,11 +410,90 @@ function windowTotals() {
   return { usage, cost: hasCost ? cost : null, unit: interval.unit };
 }
 
+// The hero summary card follows the chart's visible window: total cost (or
+// usage when no cost series exists) in view, with a delta against the prior
+// window of the same length when the data reaches back that far.
 function updateWindowSum() {
-  const t = windowTotals();
-  $("window-sum").textContent = t
-    ? `${fmtNum(t.usage)} ${t.unit}${t.cost != null ? ` · ${fmtUsd(t.cost)}` : ""} in view`
-    : "";
+  const win = currentWindow();
+  const cur = win ? rangeTotals(win.from, win.to) : null;
+  const deltaEl = $("hero-delta");
+  if (!cur) {
+    $("hero-value").textContent = "–";
+    $("hero-sub").textContent = "";
+    $("hero-meta").textContent = "";
+    deltaEl.textContent = "";
+    deltaEl.className = "hero-delta";
+    return;
+  }
+  const hasCost = cur.cost != null;
+  const width = win.to - win.from;
+  const stampFmt = width >= 2 * 86400e3
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+  const stamp = (ms) => new Date(ms).toLocaleString("en-US", stampFmt);
+  $("hero-label").textContent = hasCost ? "Cost in view" : "Usage in view";
+  $("hero-value").innerHTML = hasCost
+    ? esc(fmtUsd(cur.cost))
+    : `${esc(fmtNum(cur.usage))} <small>${esc(cur.unit)}</small>`;
+  $("hero-sub").textContent =
+    (hasCost ? `${fmtNum(cur.usage)} ${cur.unit} · ` : "") +
+    `${stamp(win.from)} – ${stamp(win.to)}`;
+
+  let deltaPct = null;
+  if (win.from - width >= win.lo) {
+    const prev = rangeTotals(win.from - width, win.from - 1);
+    deltaPct = prev ? pct(hasCost ? cur.cost : cur.usage, hasCost ? prev.cost : prev.usage) : null;
+  }
+  if (deltaPct != null && Number.isFinite(deltaPct)) {
+    deltaEl.className = "hero-delta " + (deltaPct < 0 ? "good" : deltaPct > 0 ? "bad" : "");
+    deltaEl.textContent =
+      `${deltaPct > 0 ? "▲" : deltaPct < 0 ? "▼" : ""} ${Math.abs(deltaPct).toFixed(0)}% vs prior period`;
+  } else {
+    deltaEl.textContent = "";
+    deltaEl.className = "hero-delta";
+  }
+
+  // Context facts for the window: per-day average (once the window spans
+  // multiple days), the effective rate actually paid, and the peak bucket.
+  const meta = [];
+  const daysInView = width / 86400e3;
+  if (daysInView >= 1.5) {
+    meta.push(hasCost
+      ? `${fmtUsd(cur.cost / daysInView)}/day avg`
+      : `${fmtNum(cur.usage / daysInView)} ${cur.unit}/day avg`);
+  }
+  if (hasCost && cur.usage > 0) meta.push(`${fmtUsd(cur.cost / cur.usage, 2)}/${cur.unit} effective`);
+  const peak = windowPeak(win);
+  if (peak) {
+    meta.push(state.res === "daily"
+      ? `peak day ${fmtNum(peak.value)} ${cur.unit} · ${fmtStamp(peak.ms, "daily")}`
+      : `peak ${fmtNum(peak.value)} ${cur.unit} · ${fmtStamp(peak.ms, state.res)}`);
+  }
+  $("hero-meta").textContent = meta.join("  ·  ");
+}
+
+// The largest single bucket (summed across streams, exclusions applied)
+// inside the visible window.
+function windowPeak(win) {
+  const interval = intervalFor(state.res);
+  if (!interval) return null;
+  const offsets = excludedOffsets(state.res);
+  const totals = new Map();
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      if (entry.values[i] == null) continue;
+      const ms = new Date(entry.starts[i]).getTime();
+      if (ms < win.from || ms > win.to) continue;
+      totals.set(ms, (totals.get(ms) ?? 0) + entry.values[i]);
+    }
+  }
+  let best = null;
+  for (const [ms, raw] of totals) {
+    const off = offsets ? offsets.get(ms) : null;
+    const value = raw - (off ? off.value : 0);
+    if (!best || value > best.value) best = { ms, value };
+  }
+  return best;
 }
 
 function applyRange() {
@@ -592,7 +669,7 @@ function renderBills() {
     (x) => fmtUsd(x), "Total bill ($)");
 }
 
-// -------------------------------------------------------------- stat tiles --
+// ----------------------------------------------------------------- summary --
 
 function dailyTotals() {
   const interval = intervalFor("daily");
@@ -631,9 +708,12 @@ function sumRange(days, from, to, field) {
   return any ? sum : null;
 }
 
-function tile(label, value, sub, deltaPct) {
+const pct = (cur, prev) => (prev ? ((cur - prev) / prev) * 100 : null);
+
+// A quiet secondary stat for the strip under the hero number.
+function stat(label, value, sub, deltaPct) {
   const div = document.createElement("div");
-  div.className = "tile";
+  div.className = "stat";
   const l = document.createElement("div"); l.className = "label"; l.textContent = label;
   const v = document.createElement("div"); v.className = "value"; v.innerHTML = value;
   div.append(l, v);
@@ -650,10 +730,8 @@ function tile(label, value, sub, deltaPct) {
   return div;
 }
 
-const pct = (cur, prev) => (prev ? ((cur - prev) / prev) * 100 : null);
-
-function renderTiles() {
-  const root = $("tiles");
+function renderStats() {
+  const root = $("sum-stats");
   root.textContent = "";
   const days = dailyTotals();
   const interval = intervalFor("daily");
@@ -664,8 +742,8 @@ function renderTiles() {
   const latest = days[n - 1];
   const prev = n >= 2 ? days[n - 2] : null;
   const latestDate = new Date(latest.day + "T12:00:00")
-    .toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  root.append(tile(
+    .toLocaleString("en-US", { month: "short", day: "numeric" });
+  root.append(stat(
     `Latest day · ${latestDate}`,
     `${fmtNum(latest.value)} <small>${esc(unit)}</small>`,
     "vs previous day",
@@ -674,7 +752,7 @@ function renderTiles() {
 
   const wk = sumRange(days, Math.max(0, n - 7), n, "value");
   const wkPrev = n > 7 ? sumRange(days, Math.max(0, n - 14), n - 7, "value") : null;
-  root.append(tile(
+  root.append(stat(
     "Last 7 days",
     `${fmtNum(wk)} <small>${esc(unit)}</small>`,
     "vs prior 7 days",
@@ -684,11 +762,21 @@ function renderTiles() {
   const moCost = sumRange(days, Math.max(0, n - 30), n, "cost");
   const moCostPrev = n > 30 ? sumRange(days, Math.max(0, n - 60), n - 30, "cost") : null;
   if (moCost != null) {
-    root.append(tile(
-      "Last 30 days cost (est.)",
+    root.append(stat(
+      "30-day cost (est.)",
       fmtUsd(moCost, 0),
       "vs prior 30 days",
       moCostPrev != null ? pct(moCost, moCostPrev) : null,
+    ));
+  }
+
+  const base = alwaysOnEstimate(days);
+  if (base) {
+    root.append(stat(
+      "Always-on load",
+      `${fmtNum(base.kw * 1000, 0)} <small>W</small>`,
+      base.perMo != null ? `≈ ${fmtUsd(base.perMo, 0)}/mo baseline` : "baseline draw",
+      null,
     ));
   }
 
@@ -697,13 +785,143 @@ function renderTiles() {
     const last = [...bills].sort((a, b) => (a.period_end < b.period_end ? -1 : 1)).at(-1);
     const period = new Date(last.period_end + "T12:00:00")
       .toLocaleString("en-US", { month: "short", day: "numeric" });
-    root.append(tile(
+    root.append(stat(
       `Latest bill · thru ${period}`,
       fmtUsd(last.total_amount_usd),
       last.estimated ? "estimated" : "",
       null,
     ));
   }
+}
+
+// Always-on (phantom) load: the 5th-percentile bucket of the last week of
+// fine-grained data, read as continuous draw, priced at the recent effective
+// rate. Hourly buckets are preferred so appliance cycles (fridge) average in
+// rather than being cherry-picked at their off moments. kWh data only.
+function alwaysOnEstimate(days) {
+  const res = state.data.intervals?.hourly ? "hourly" : state.data.intervals?.quarter_hour ? "quarter_hour" : null;
+  if (!res) return null;
+  const interval = intervalFor(res);
+  if (!interval || interval.unit !== "kWh") return null;
+  const hours = res === "hourly" ? 1 : 0.25;
+  const totals = new Map();
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      if (entry.values[i] != null)
+        totals.set(entry.starts[i], (totals.get(entry.starts[i]) ?? 0) + entry.values[i]);
+    }
+  }
+  const starts = [...totals.keys()].sort();
+  const week = starts.slice(-Math.round(7 * 24 / hours)).map((s) => totals.get(s));
+  if (week.length < 48 / hours) return null; // need at least ~2 days of buckets
+  week.sort((a, b) => a - b);
+  const kw = week[Math.floor(week.length * 0.05)] / hours;
+  if (!(kw > 0)) return null;
+  // Effective rate over the last 30 days of daily totals.
+  const n = days.length;
+  const moCost = sumRange(days, Math.max(0, n - 30), n, "cost");
+  const moUsage = sumRange(days, Math.max(0, n - 30), n, "value");
+  const rate = moCost != null && moUsage > 0 ? moCost / moUsage : null;
+  return { kw, perMo: rate != null ? kw * 24 * 30.4 * rate : null };
+}
+
+// Per-contributor cost (usage if no costs) on the most recent metered day:
+// each known device plus "Everything else", with its share of the day.
+function dayBreakdown() {
+  const interval = intervalFor("daily");
+  if (!interval || !interval.series.length) return null;
+  const comps = componentEntries("daily");
+  if (!comps.length) return null;
+  const entries = [remainderEntry("daily", comps), ...comps].filter(Boolean);
+  let day = null;
+  for (const entry of interval.series) {
+    const last = entry.starts[entry.starts.length - 1];
+    if (last && (!day || last > day)) day = last;
+  }
+  if (!day) return null;
+  day = day.slice(0, 10);
+  // Run-rate window: the 30 days up to and including the shown day.
+  const cutoff = new Date(new Date(day + "T12:00:00").getTime() - 30 * 86400e3)
+    .toISOString().slice(0, 10);
+  const rows = entries
+    .map((entry) => {
+      let value = null, cost = null, aggValue = 0, aggCost = 0;
+      const aggDays = new Set();
+      for (let i = 0; i < entry.starts.length; i++) {
+        const d = entry.starts[i].slice(0, 10);
+        if (d === day) {
+          if (entry.values[i] != null) value = (value ?? 0) + entry.values[i];
+          if (entry.costs && entry.costs[i] != null) cost = (cost ?? 0) + entry.costs[i];
+        }
+        if (d > cutoff && d <= day && entry.values[i] != null) {
+          aggDays.add(d);
+          aggValue += entry.values[i];
+          if (entry.costs && entry.costs[i] != null) aggCost += entry.costs[i];
+        }
+      }
+      return { name: entry.name, value, cost, aggValue, aggCost, aggDays: aggDays.size };
+    })
+    .filter((row) => row.value != null || row.cost != null);
+  if (!rows.length) return null;
+  const hasCost = rows.some((row) => row.cost != null);
+  const amount = (row) => (hasCost ? row.cost : row.value) ?? 0;
+  rows.sort((a, b) => amount(b) - amount(a));
+  return { day, rows, hasCost, unit: interval.unit, total: rows.reduce((s, r) => s + amount(r), 0) };
+}
+
+function renderBreakdown() {
+  const card = $("breakdown-card");
+  const bk = dayBreakdown();
+  card.hidden = !bk;
+  if (!bk) return;
+  const t = tokens();
+  const fmt = bk.hasCost ? (x) => fmtUsd(x) : (x) => `${fmtNum(x)} ${bk.unit}`;
+  $("breakdown-label").textContent = bk.hasCost ? "Cost by device" : "Usage by device";
+  const dayLabel = new Date(bk.day + "T12:00:00")
+    .toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  $("breakdown-day").textContent = `${dayLabel} · ${fmt(bk.total)} total`;
+
+  const list = $("breakdown-list");
+  list.textContent = "";
+  const cell = (cls, text) => {
+    const span = document.createElement("span");
+    span.className = cls;
+    span.textContent = text;
+    return span;
+  };
+
+  const head = document.createElement("li");
+  head.className = "bk-head";
+  head.append(cell("", ""), cell("bk-name", "Source"), cell("bk-share", "Share"),
+    cell("bk-value", "Day"), cell("bk-permo", "Est. / mo"));
+  list.append(head);
+
+  for (const row of bk.rows) {
+    const li = document.createElement("li");
+    const dot = document.createElement("span");
+    dot.className = "bk-dot";
+    dot.style.background = t.series[paletteSlot(row.name) % t.series.length];
+    const amount = (bk.hasCost ? row.cost : row.value) ?? 0;
+    const share = bk.total > 0 ? `${((amount / bk.total) * 100).toFixed(0)}%` : "";
+    // Monthly run-rate from the row's 30-day daily average.
+    const aggAmt = bk.hasCost ? row.aggCost : row.aggValue;
+    const perMo = row.aggDays >= 2 ? (aggAmt / row.aggDays) * 30.4 : null;
+    const perMoText = perMo == null ? "–"
+      : bk.hasCost ? `≈ ${fmtUsd(perMo, perMo >= 10 ? 0 : 2)}`
+      : `≈ ${fmtNum(perMo, 0)} ${bk.unit}`;
+    li.append(dot,
+      cell("bk-name", row.name),
+      cell("bk-share", share),
+      cell("bk-value", fmt(bk.hasCost ? row.cost : row.value)),
+      cell("bk-permo", perMoText));
+    list.append(li);
+  }
+}
+
+function renderSummary() {
+  renderStats();
+  renderBreakdown();
+  updateWindowSum();
 }
 
 // ------------------------------------------------------------- table views --
@@ -879,7 +1097,7 @@ function renderDeviceChips() {
 
 function renderAll() {
   if (!state.data) return;
-  renderTiles();
+  renderSummary();
   renderUsage();
   renderMonthly();
   renderBills();
