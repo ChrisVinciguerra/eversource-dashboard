@@ -21,7 +21,7 @@ from .config import (
     Json,
     NoExports,
 )
-from .devices import device_entry, load_devices, overlap_entries
+from .devices import device_entry, fit_patterns, load_devices, overlap_entries
 from .progress import emit
 
 # Dedup keys per dataset: rows matching on these are the same observation, and
@@ -185,6 +185,17 @@ def build_payload() -> Json:
     # patterns so partial buckets don't over-subtract.
     finest = next((data[n] for n in reversed(INTERVAL_DATASETS) if n in data), None)
     cutoff = str(finest["end"].max()) if finest is not None else None
+
+    # Fit device patterns onto the actual quarter-hour meter signal, so
+    # cycling appliances are subtracted when (and as hard as) they really ran.
+    quarter = data.get("quarter_hour")
+    if devices and quarter is not None and unit_of(quarter) == "kWh":
+        meter: dict[str, float] = {}
+        for start, value in zip(quarter["start"], quarter["value"]):
+            if pd.notna(value):
+                key = str(start)[:16]
+                meter[key] = meter.get(key, 0.0) + float(value)
+        fit_patterns(devices, meter)
 
     intervals: Json = {}
     last_read: str | None = None
