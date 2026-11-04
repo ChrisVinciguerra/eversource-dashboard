@@ -13,15 +13,11 @@ const state = {
   data: null,
   res: localStorage.getItem("res") || "quarter_hour", // daily | hourly | quarter_hour
   metric: localStorage.getItem("metric") || "usage",  // usage | cost
-  // How the usage chart breaks down known devices:
-  //   total   — one net series (devices only show up via the subtract chips)
-  //   stacked — each device plus "Everything else", stacked to the total
-  //   lines   — each device plus "Everything else" as separate series
-  view: localStorage.getItem("view") || "total",
-  // number of days or "all"
-  rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1,
-  // Known devices whose usage is virtually subtracted from the charts.
-  excluded: new Set(JSON.parse(localStorage.getItem("excluded") || "[]")),
+  // How the device breakdown is drawn: separate "lines" or "stacked" areas.
+  view: localStorage.getItem("view") === "stacked" ? "stacked" : "lines",
+  rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1, // days or "all"
+  // Known devices left inside "Everything else" instead of broken out.
+  folded: new Set(JSON.parse(localStorage.getItem("folded") || "[]")),
 };
 
 const charts = {};        // id -> echarts instance
@@ -147,39 +143,6 @@ function intervalFor(res) {
   return state.data && state.data.intervals ? state.data.intervals[res] : null;
 }
 
-function excludedDevices(res) {
-  const interval = intervalFor(res);
-  if (!interval || !interval.devices) return [];
-  return interval.devices.filter((dev) => state.excluded.has(dev.name));
-}
-
-// Overlap streams (energy two excluded devices both metered) that apply to
-// the current exclusion set: both of the pair's names must be excluded.
-function activeOverlaps(res) {
-  const interval = intervalFor(res);
-  if (!interval || !interval.overlaps) return [];
-  return interval.overlaps.filter((o) => o.names.every((n) => state.excluded.has(n)));
-}
-
-// Sum of the excluded devices' usage/cost per bucket start (ms), to subtract
-// from each displayed series. Energy metered by two excluded devices at once
-// (the Mac charging from a metered charging station) is counted once.
-function excludedOffsets(res) {
-  const map = new Map();
-  const add = (entry, sign) => {
-    for (let i = 0; i < entry.starts.length; i++) {
-      const ms = new Date(entry.starts[i]).getTime();
-      const cur = map.get(ms) || { value: 0, cost: 0 };
-      cur.value += sign * (entry.values[i] ?? 0);
-      if (entry.costs) cur.cost += sign * (entry.costs[i] ?? 0);
-      map.set(ms, cur);
-    }
-  };
-  for (const dev of excludedDevices(res)) add(dev, 1);
-  for (const overlap of activeOverlaps(res)) add(overlap, -1);
-  return map.size ? map : null;
-}
-
 // Known-device names in a stable order, shared by the chart's component
 // series and the filter chips so both map a device to the same palette slot:
 // "Everything else" takes slot 0, device i takes slot i + 1 (cycling).
@@ -223,9 +186,8 @@ function componentEntries(res) {
   });
 }
 
-// "Everything else": the metered total minus every known device (excluded or
-// not — a device hidden by its chip disappears from the chart rather than
-// melting back into the remainder).
+// "Everything else": the metered total minus the broken-out devices, so the
+// components always stack back to the meter reading.
 function remainderEntry(res, comps) {
   const interval = intervalFor(res);
   if (!interval || !interval.series.length) return null;
@@ -258,18 +220,12 @@ function remainderEntry(res, comps) {
   return entry;
 }
 
-function seriesPoints(entry, metric, offsets) {
+function seriesPoints(entry, metric) {
   const ys = metric === "cost" ? entry.costs : entry.values;
   if (!ys) return null;
-  const key = metric === "cost" ? "cost" : "value";
   const pts = new Array(entry.starts.length);
-  for (let i = 0; i < entry.starts.length; i++) {
-    const ms = new Date(entry.starts[i]).getTime();
-    let y = ys[i];
-    const off = offsets && y != null ? offsets.get(ms) : null;
-    if (off) y = Math.round((y - off[key]) * 1e6) / 1e6;
-    pts[i] = [ms, y];
-  }
+  for (let i = 0; i < entry.starts.length; i++)
+    pts[i] = [new Date(entry.starts[i]).getTime(), ys[i]];
   return pts;
 }
 
@@ -285,26 +241,20 @@ function renderUsage() {
   const unitLabel = metric === "cost" ? "$" : interval.unit;
   const valueFmt = metric === "cost" ? (x) => fmtUsd(x, isDaily ? 2 : 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
 
+  // With known devices the chart always splits the meter into each unfolded
+  // device plus "Everything else"; with none, it's the plain metered series.
   const comps = componentEntries(state.res);
-  const split = state.view !== "total" && comps.length > 0;
+  const split = comps.length > 0;
   const stacked = split && state.view === "stacked";
-
-  // In the component views each entry is already a component, so the
-  // exclusion offsets don't apply — a chipped device is simply left out.
-  let entries, offsets;
-  if (split) {
-    const rem = remainderEntry(state.res, comps);
-    entries = [rem, ...comps.filter((dev) => !state.excluded.has(dev.name))].filter(Boolean);
-    offsets = null;
-  } else {
-    entries = interval.series;
-    offsets = excludedOffsets(state.res);
-  }
+  const shown = comps.filter((dev) => !state.folded.has(dev.name));
+  const entries = split
+    ? [remainderEntry(state.res, shown), ...shown].filter(Boolean)
+    : interval.series;
 
   const colors = [];
   const series = entries
     .map((entry) => {
-      const pts = seriesPoints(entry, metric, offsets);
+      const pts = seriesPoints(entry, metric);
       if (!pts) return null;
       colors.push(t.series[paletteSlot(entry.name) % t.series.length]);
       return isDaily
@@ -366,11 +316,10 @@ function renderUsage() {
   updateWindowSum();
   syncZoomFine();
 
-  const minus = excludedDevices(state.res).map((dev) => ` − ${dev.name}`).join("");
   $("usage-title").textContent =
     ({ daily: "Daily", hourly: "Hourly", quarter_hour: "15-minute" }[state.res]) +
     (metric === "cost" ? " cost" : " usage") +
-    (split ? " by device" : "") + minus + ` · ${unitLabel}`;
+    (split ? " by device" : "") + ` · ${unitLabel}`;
 }
 
 // The visible zoom window plus the full data extent, all in epoch ms.
@@ -389,20 +338,18 @@ function currentWindow() {
   return { from, to, lo, hi };
 }
 
-// Usage and cost summed over [from, to] ms, inclusive (exclusions applied).
+// Usage and cost summed over [from, to] ms, inclusive.
 function rangeTotals(from, to) {
   const interval = intervalFor(state.res);
   if (!interval) return null;
-  const offsets = excludedOffsets(state.res);
   let usage = 0, cost = 0, hasCost = false;
   for (const entry of interval.series) {
     for (let i = 0; i < entry.starts.length; i++) {
       const ms = new Date(entry.starts[i]).getTime();
       if (ms < from || ms > to) continue;
-      const off = offsets ? offsets.get(ms) : null;
-      if (entry.values[i] != null) usage += entry.values[i] - (off ? off.value : 0);
+      if (entry.values[i] != null) usage += entry.values[i];
       if (entry.costs && entry.costs[i] != null) {
-        cost += entry.costs[i] - (off ? off.cost : 0);
+        cost += entry.costs[i];
         hasCost = true;
       }
     }
@@ -472,12 +419,10 @@ function updateWindowSum() {
   $("hero-meta").textContent = meta.join("  ·  ");
 }
 
-// The largest single bucket (summed across streams, exclusions applied)
-// inside the visible window.
+// The largest single bucket (summed across streams) inside the visible window.
 function windowPeak(win) {
   const interval = intervalFor(state.res);
   if (!interval) return null;
-  const offsets = excludedOffsets(state.res);
   const totals = new Map();
   for (const entry of interval.series) {
     for (let i = 0; i < entry.starts.length; i++) {
@@ -488,9 +433,7 @@ function windowPeak(win) {
     }
   }
   let best = null;
-  for (const [ms, raw] of totals) {
-    const off = offsets ? offsets.get(ms) : null;
-    const value = raw - (off ? off.value : 0);
+  for (const [ms, value] of totals) {
     if (!best || value > best.value) best = { ms, value };
   }
   return best;
@@ -685,18 +628,6 @@ function dailyTotals() {
       byDay.set(day, cur);
     }
   }
-  // Excluded devices come off the day totals once (not once per stream);
-  // overlaps between excluded devices go back so they only come off once.
-  const adjust = (entry, sign) => {
-    for (let i = 0; i < entry.starts.length; i++) {
-      const cur = byDay.get(entry.starts[i].slice(0, 10));
-      if (!cur) continue;
-      cur.value -= sign * (entry.values[i] ?? 0);
-      if (cur.hasCost && entry.costs) cur.cost -= sign * (entry.costs[i] ?? 0);
-    }
-  };
-  for (const dev of excludedDevices("daily")) adjust(dev, 1);
-  for (const overlap of activeOverlaps("daily")) adjust(overlap, -1);
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
 }
 
@@ -963,16 +894,13 @@ function fillTable(name) {
   if (name === "usage") {
     const interval = intervalFor(state.res);
     if (!interval) return;
-    const offsets = excludedOffsets(state.res);
     const rows = [];
     for (const entry of interval.series) {
       for (let i = 0; i < entry.starts.length; i++) {
-        const off = offsets ? offsets.get(new Date(entry.starts[i]).getTime()) : null;
         rows.push({
           start: entry.starts[i], stream: entry.name,
-          value: entry.values[i] == null || !off ? entry.values[i] : entry.values[i] - off.value,
-          cost: !entry.costs || entry.costs[i] == null ? null
-            : off ? entry.costs[i] - off.cost : entry.costs[i],
+          value: entry.values[i],
+          cost: !entry.costs || entry.costs[i] == null ? null : entry.costs[i],
         });
       }
     }
@@ -1063,7 +991,9 @@ syncSeg("res-seg", "res", state.res);
 syncSeg("metric-seg", "metric", state.metric);
 syncSeg("view-seg", "view", state.view);
 
-// One chip per known device (devices/*.json); active = subtracted from charts.
+// One chip per known device (devices/*.json); active = broken out as its own
+// series, inactive = folded into "Everything else". Toggling one never
+// changes a total, only how the meter is sliced.
 function renderDeviceChips() {
   const names = deviceNames();
   const root = $("device-chips");
@@ -1078,16 +1008,15 @@ function renderDeviceChips() {
     dot.className = "chip-dot";
     dot.style.background = `var(--series-${(paletteSlot(name) % 4) + 1})`;
     const label = document.createElement("span");
-    label.textContent = `− ${name}`;
+    label.textContent = name;
     btn.append(dot, label);
-    btn.title = `Subtract ${name} from the charts`;
-    btn.classList.toggle("active", state.excluded.has(name));
+    btn.title = `Break ${name} out of "Everything else"`;
+    btn.classList.toggle("active", !state.folded.has(name));
     btn.addEventListener("click", () => {
-      state.excluded[state.excluded.has(name) ? "delete" : "add"](name);
-      localStorage.setItem("excluded", JSON.stringify([...state.excluded]));
-      btn.classList.toggle("active", state.excluded.has(name));
-      renderAll();
-      if (!$("usage-table").hidden) fillTable("usage");
+      state.folded[state.folded.has(name) ? "delete" : "add"](name);
+      localStorage.setItem("folded", JSON.stringify([...state.folded]));
+      btn.classList.toggle("active", !state.folded.has(name));
+      renderUsage();
     });
     root.append(btn);
   }
