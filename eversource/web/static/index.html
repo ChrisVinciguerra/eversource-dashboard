@@ -62,7 +62,21 @@
 </dialog>
 
 <main>
-  <section id="tiles" class="tiles" aria-label="Summary"></section>
+  <section class="summary" aria-label="Summary">
+    <div class="card summary-hero">
+      <div class="overline" id="hero-label">Cost in view</div>
+      <div class="hero-value" id="hero-value">–</div>
+      <div class="hero-sub" id="hero-sub"></div>
+      <div class="hero-delta" id="hero-delta"></div>
+      <div class="hero-meta" id="hero-meta"></div>
+      <div class="summary-stats" id="sum-stats"></div>
+    </div>
+    <div class="card summary-breakdown" id="breakdown-card" hidden>
+      <div class="overline" id="breakdown-label">Cost by device</div>
+      <div class="hero-sub" id="breakdown-day"></div>
+      <ul class="breakdown-list" id="breakdown-list"></ul>
+    </div>
+  </section>
 
   <section class="filters" aria-label="Filters">
     <div class="seg" id="range-seg" role="group" aria-label="Date range">
@@ -82,13 +96,17 @@
       <button type="button" data-metric="usage" class="active">Usage</button>
       <button type="button" data-metric="cost">Cost</button>
     </div>
-    <div class="seg chips" id="device-chips" role="group" aria-label="Subtract known devices" hidden></div>
+    <div class="seg" id="view-seg" role="group" aria-label="View" hidden>
+      <button type="button" data-view="lines" class="active">Lines</button>
+      <button type="button" data-view="stacked">Stacked</button>
+      <button type="button" data-view="total">Total</button>
+    </div>
+    <div class="seg chips" id="device-chips" role="group" aria-label="Break out known devices" hidden></div>
   </section>
 
   <section class="card" id="usage-card">
     <div class="card-head">
       <h2 id="usage-title">Usage</h2>
-      <span id="window-sum" class="window-sum"></span>
       <button type="button" class="btn btn-ghost table-toggle" data-for="usage">Table</button>
     </div>
     <div class="chart" id="usage-chart"></div>

@@ -9,14 +9,17 @@ const $ = (id) => document.getElementById(id);
 
 // The filter picks survive reloads.
 const savedRange = localStorage.getItem("range");
+const savedView = localStorage.getItem("view");
 const state = {
   data: null,
   res: localStorage.getItem("res") || "quarter_hour", // daily | hourly | quarter_hour
   metric: localStorage.getItem("metric") || "usage",  // usage | cost
-  // number of days or "all"
-  rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1,
-  // Known devices whose usage is virtually subtracted from the charts.
-  excluded: new Set(JSON.parse(localStorage.getItem("excluded") || "[]")),
+  // Device breakdown as separate "lines" (default) or "stacked" areas, or
+  // "total": the one net series with every device folded in.
+  view: savedView === "stacked" || savedView === "total" ? savedView : "lines",
+  rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1, // days or "all"
+  // Known devices left inside "Everything else" instead of broken out.
+  folded: new Set(JSON.parse(localStorage.getItem("folded") || "[]")),
 };
 
 const charts = {};        // id -> echarts instance
@@ -142,51 +145,89 @@ function intervalFor(res) {
   return state.data && state.data.intervals ? state.data.intervals[res] : null;
 }
 
-function excludedDevices(res) {
+// Known-device names in a stable order, shared by the chart's component
+// series and the filter chips so both map a device to the same palette slot:
+// "Everything else" takes slot 0, device i takes slot i + 1 (cycling).
+// Toggling a chip therefore never reshuffles colors.
+function deviceNames() {
+  return [...new Set(
+    Object.values(state.data.intervals || {})
+      .flatMap((iv) => iv.devices || [])
+      .map((dev) => dev.name),
+  )];
+}
+
+function paletteSlot(name) {
+  return name === "Everything else" ? 0 : deviceNames().indexOf(name) + 1;
+}
+
+// Device streams with doubly-metered energy attributed exactly once: each
+// overlap comes off the first-named device (the meter that also saw another
+// known device's draw), so stacking the components never double-counts.
+function componentEntries(res) {
   const interval = intervalFor(res);
   if (!interval || !interval.devices) return [];
-  return interval.devices.filter((dev) => state.excluded.has(dev.name));
-}
-
-// Overlap streams (energy two excluded devices both metered) that apply to
-// the current exclusion set: both of the pair's names must be excluded.
-function activeOverlaps(res) {
-  const interval = intervalFor(res);
-  if (!interval || !interval.overlaps) return [];
-  return interval.overlaps.filter((o) => o.names.every((n) => state.excluded.has(n)));
-}
-
-// Sum of the excluded devices' usage/cost per bucket start (ms), to subtract
-// from each displayed series. Energy metered by two excluded devices at once
-// (the Mac charging from a metered charging station) is counted once.
-function excludedOffsets(res) {
-  const map = new Map();
-  const add = (entry, sign) => {
-    for (let i = 0; i < entry.starts.length; i++) {
-      const ms = new Date(entry.starts[i]).getTime();
-      const cur = map.get(ms) || { value: 0, cost: 0 };
-      cur.value += sign * (entry.values[i] ?? 0);
-      if (entry.costs) cur.cost += sign * (entry.costs[i] ?? 0);
-      map.set(ms, cur);
+  const overlaps = interval.overlaps || [];
+  return interval.devices.map((dev) => {
+    const mine = overlaps.filter((o) => o.names[0] === dev.name);
+    if (!mine.length) return dev;
+    const values = dev.values.slice();
+    const costs = dev.costs ? dev.costs.slice() : null;
+    const indexOf = new Map(dev.starts.map((s, i) => [s, i]));
+    for (const o of mine) {
+      for (let i = 0; i < o.starts.length; i++) {
+        const j = indexOf.get(o.starts[i]);
+        if (j == null) continue;
+        if (values[j] != null)
+          values[j] = Math.round((values[j] - (o.values[i] ?? 0)) * 1e6) / 1e6;
+        if (costs && o.costs && costs[j] != null)
+          costs[j] = Math.round((costs[j] - (o.costs[i] ?? 0)) * 1e6) / 1e6;
+      }
     }
-  };
-  for (const dev of excludedDevices(res)) add(dev, 1);
-  for (const overlap of activeOverlaps(res)) add(overlap, -1);
-  return map.size ? map : null;
+    return costs ? { ...dev, values, costs } : { ...dev, values };
+  });
 }
 
-function seriesPoints(entry, metric, offsets) {
+// "Everything else": the metered total minus the broken-out devices, so the
+// components always stack back to the meter reading.
+function remainderEntry(res, comps) {
+  const interval = intervalFor(res);
+  if (!interval || !interval.series.length) return null;
+  const totals = new Map(); // ISO start -> { value, cost }
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      const cur = totals.get(entry.starts[i]) || { value: null, cost: null };
+      if (entry.values[i] != null) cur.value = (cur.value ?? 0) + entry.values[i];
+      if (entry.costs && entry.costs[i] != null) cur.cost = (cur.cost ?? 0) + entry.costs[i];
+      totals.set(entry.starts[i], cur);
+    }
+  }
+  for (const dev of comps) {
+    for (let i = 0; i < dev.starts.length; i++) {
+      const cur = totals.get(dev.starts[i]);
+      if (!cur) continue;
+      if (cur.value != null) cur.value -= dev.values[i] ?? 0;
+      if (cur.cost != null && dev.costs) cur.cost -= dev.costs[i] ?? 0;
+    }
+  }
+  const starts = [...totals.keys()].sort();
+  const round = (x) => (x == null ? null : Math.round(x * 1e6) / 1e6);
+  const entry = {
+    name: "Everything else",
+    starts,
+    values: starts.map((k) => round(totals.get(k).value)),
+  };
+  if (starts.some((k) => totals.get(k).cost != null))
+    entry.costs = starts.map((k) => round(totals.get(k).cost));
+  return entry;
+}
+
+function seriesPoints(entry, metric) {
   const ys = metric === "cost" ? entry.costs : entry.values;
   if (!ys) return null;
-  const key = metric === "cost" ? "cost" : "value";
   const pts = new Array(entry.starts.length);
-  for (let i = 0; i < entry.starts.length; i++) {
-    const ms = new Date(entry.starts[i]).getTime();
-    let y = ys[i];
-    const off = offsets && y != null ? offsets.get(ms) : null;
-    if (off) y = Math.round((y - off[key]) * 1e6) / 1e6;
-    pts[i] = [ms, y];
-  }
+  for (let i = 0; i < entry.starts.length; i++)
+    pts[i] = [new Date(entry.starts[i]).getTime(), ys[i]];
   return pts;
 }
 
@@ -202,26 +243,43 @@ function renderUsage() {
   const unitLabel = metric === "cost" ? "$" : interval.unit;
   const valueFmt = metric === "cost" ? (x) => fmtUsd(x, isDaily ? 2 : 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
 
-  const offsets = excludedOffsets(state.res);
-  const series = interval.series
+  // Lines/stacked split the meter into each unfolded device plus "Everything
+  // else"; total mode (or no known devices) is the plain metered series.
+  const comps = state.view === "total" ? [] : componentEntries(state.res);
+  const split = comps.length > 0;
+  const stacked = split && state.view === "stacked";
+  const shown = comps.filter((dev) => !state.folded.has(dev.name));
+  const entries = split
+    ? [remainderEntry(state.res, shown), ...shown].filter(Boolean)
+    : interval.series;
+
+  const colors = [];
+  const series = entries
     .map((entry) => {
-      const pts = seriesPoints(entry, metric, offsets);
+      const pts = seriesPoints(entry, metric);
       if (!pts) return null;
+      colors.push(t.series[paletteSlot(entry.name) % t.series.length]);
       return isDaily
         ? {
             name: entry.name, type: "bar", data: pts,
             barMaxWidth: 24,
-            itemStyle: { borderRadius: [4, 4, 0, 0] },
+            stack: stacked ? "components" : undefined,
+            itemStyle: { borderRadius: stacked ? 0 : [4, 4, 0, 0] },
           }
         : {
             name: entry.name, type: "line", data: pts,
-            showSymbol: false, sampling: "lttb",
+            showSymbol: false,
+            // Sampling would misalign the stacked buckets, so skip it there.
+            sampling: stacked ? undefined : "lttb",
+            stack: stacked ? "components" : undefined,
+            areaStyle: stacked ? { opacity: 0.35 } : undefined,
             lineStyle: { width: 2 }, symbolSize: 8,
           };
     })
     .filter(Boolean);
 
   const opt = baseOption(t);
+  if (split) opt.color = colors;
   opt.xAxis.type = "time";
   opt.yAxis.name = metric === "cost" ? "Cost ($)" : `Usage (${interval.unit})`;
   opt.yAxis.nameTextStyle = { color: t.textSecondary, align: "left" };
@@ -230,8 +288,15 @@ function renderUsage() {
   opt.legend = legendFor(series, t, { right: 48 });
   opt.tooltip.formatter = (params) => {
     if (!params.length) return "";
+    const rows = params.filter((p) => p.value != null && p.value[1] != null);
+    const total = split && rows.length > 1
+      ? `<div style="margin-top:4px;padding-top:3px;border-top:1px solid ${t.gridline}">
+           <strong>${esc(valueFmt(rows.reduce((sum, p) => sum + p.value[1], 0)))}</strong>
+           <span style="opacity:.75">Total</span>
+         </div>`
+      : "";
     return `<div style="color:${t.textSecondary}">${esc(fmtStamp(params[0].value[0], state.res))}</div>` +
-      tooltipRows(params, valueFmt);
+      tooltipRows(params, valueFmt) + total;
   };
   opt.dataZoom = [
     { type: "inside", xAxisIndex: 0 },
@@ -253,10 +318,10 @@ function renderUsage() {
   updateWindowSum();
   syncZoomFine();
 
-  const minus = excludedDevices(state.res).map((dev) => ` − ${dev.name}`).join("");
   $("usage-title").textContent =
     ({ daily: "Daily", hourly: "Hourly", quarter_hour: "15-minute" }[state.res]) +
-    (metric === "cost" ? " cost" : " usage") + minus + ` · ${unitLabel}`;
+    (metric === "cost" ? " cost" : " usage") +
+    (split ? " by device" : "") + ` · ${unitLabel}`;
 }
 
 // The visible zoom window plus the full data extent, all in epoch ms.
@@ -275,22 +340,18 @@ function currentWindow() {
   return { from, to, lo, hi };
 }
 
-// Usage and cost summed over the chart's visible window (exclusions applied).
-function windowTotals() {
+// Usage and cost summed over [from, to] ms, inclusive.
+function rangeTotals(from, to) {
   const interval = intervalFor(state.res);
-  const win = currentWindow();
-  if (!win) return null;
-  const { from, to } = win;
-  const offsets = excludedOffsets(state.res);
+  if (!interval) return null;
   let usage = 0, cost = 0, hasCost = false;
   for (const entry of interval.series) {
     for (let i = 0; i < entry.starts.length; i++) {
       const ms = new Date(entry.starts[i]).getTime();
       if (ms < from || ms > to) continue;
-      const off = offsets ? offsets.get(ms) : null;
-      if (entry.values[i] != null) usage += entry.values[i] - (off ? off.value : 0);
+      if (entry.values[i] != null) usage += entry.values[i];
       if (entry.costs && entry.costs[i] != null) {
-        cost += entry.costs[i] - (off ? off.cost : 0);
+        cost += entry.costs[i];
         hasCost = true;
       }
     }
@@ -298,11 +359,86 @@ function windowTotals() {
   return { usage, cost: hasCost ? cost : null, unit: interval.unit };
 }
 
+// The hero summary card follows the chart's visible window: total cost (or
+// usage when no cost series exists) in view, with a delta against the prior
+// window of the same length when the data reaches back that far.
 function updateWindowSum() {
-  const t = windowTotals();
-  $("window-sum").textContent = t
-    ? `${fmtNum(t.usage)} ${t.unit}${t.cost != null ? ` · ${fmtUsd(t.cost)}` : ""} in view`
-    : "";
+  const win = currentWindow();
+  const cur = win ? rangeTotals(win.from, win.to) : null;
+  const deltaEl = $("hero-delta");
+  if (!cur) {
+    $("hero-value").textContent = "–";
+    $("hero-sub").textContent = "";
+    $("hero-meta").textContent = "";
+    deltaEl.textContent = "";
+    deltaEl.className = "hero-delta";
+    return;
+  }
+  const hasCost = cur.cost != null;
+  const width = win.to - win.from;
+  const stampFmt = width >= 2 * 86400e3
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" };
+  const stamp = (ms) => new Date(ms).toLocaleString("en-US", stampFmt);
+  $("hero-label").textContent = hasCost ? "Cost in view" : "Usage in view";
+  $("hero-value").innerHTML = hasCost
+    ? esc(fmtUsd(cur.cost))
+    : `${esc(fmtNum(cur.usage))} <small>${esc(cur.unit)}</small>`;
+  $("hero-sub").textContent =
+    (hasCost ? `${fmtNum(cur.usage)} ${cur.unit} · ` : "") +
+    `${stamp(win.from)} – ${stamp(win.to)}`;
+
+  let deltaPct = null;
+  if (win.from - width >= win.lo) {
+    const prev = rangeTotals(win.from - width, win.from - 1);
+    deltaPct = prev ? pct(hasCost ? cur.cost : cur.usage, hasCost ? prev.cost : prev.usage) : null;
+  }
+  if (deltaPct != null && Number.isFinite(deltaPct)) {
+    deltaEl.className = "hero-delta " + (deltaPct < 0 ? "good" : deltaPct > 0 ? "bad" : "");
+    deltaEl.textContent =
+      `${deltaPct > 0 ? "▲" : deltaPct < 0 ? "▼" : ""} ${Math.abs(deltaPct).toFixed(0)}% vs prior period`;
+  } else {
+    deltaEl.textContent = "";
+    deltaEl.className = "hero-delta";
+  }
+
+  // Context facts for the window: per-day average (once the window spans
+  // multiple days), the effective rate actually paid, and the peak bucket.
+  const meta = [];
+  const daysInView = width / 86400e3;
+  if (daysInView >= 1.5) {
+    meta.push(hasCost
+      ? `${fmtUsd(cur.cost / daysInView)}/day avg`
+      : `${fmtNum(cur.usage / daysInView)} ${cur.unit}/day avg`);
+  }
+  if (hasCost && cur.usage > 0) meta.push(`${fmtUsd(cur.cost / cur.usage, 2)}/${cur.unit} effective`);
+  const peak = windowPeak(win);
+  if (peak) {
+    meta.push(state.res === "daily"
+      ? `peak day ${fmtNum(peak.value)} ${cur.unit} · ${fmtStamp(peak.ms, "daily")}`
+      : `peak ${fmtNum(peak.value)} ${cur.unit} · ${fmtStamp(peak.ms, state.res)}`);
+  }
+  $("hero-meta").textContent = meta.join("  ·  ");
+}
+
+// The largest single bucket (summed across streams) inside the visible window.
+function windowPeak(win) {
+  const interval = intervalFor(state.res);
+  if (!interval) return null;
+  const totals = new Map();
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      if (entry.values[i] == null) continue;
+      const ms = new Date(entry.starts[i]).getTime();
+      if (ms < win.from || ms > win.to) continue;
+      totals.set(ms, (totals.get(ms) ?? 0) + entry.values[i]);
+    }
+  }
+  let best = null;
+  for (const [ms, value] of totals) {
+    if (!best || value > best.value) best = { ms, value };
+  }
+  return best;
 }
 
 function applyRange() {
@@ -478,7 +614,7 @@ function renderBills() {
     (x) => fmtUsd(x), "Total bill ($)");
 }
 
-// -------------------------------------------------------------- stat tiles --
+// ----------------------------------------------------------------- summary --
 
 function dailyTotals() {
   const interval = intervalFor("daily");
@@ -494,18 +630,6 @@ function dailyTotals() {
       byDay.set(day, cur);
     }
   }
-  // Excluded devices come off the day totals once (not once per stream);
-  // overlaps between excluded devices go back so they only come off once.
-  const adjust = (entry, sign) => {
-    for (let i = 0; i < entry.starts.length; i++) {
-      const cur = byDay.get(entry.starts[i].slice(0, 10));
-      if (!cur) continue;
-      cur.value -= sign * (entry.values[i] ?? 0);
-      if (cur.hasCost && entry.costs) cur.cost -= sign * (entry.costs[i] ?? 0);
-    }
-  };
-  for (const dev of excludedDevices("daily")) adjust(dev, 1);
-  for (const overlap of activeOverlaps("daily")) adjust(overlap, -1);
   return [...byDay.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
 }
 
@@ -517,9 +641,12 @@ function sumRange(days, from, to, field) {
   return any ? sum : null;
 }
 
-function tile(label, value, sub, deltaPct) {
+const pct = (cur, prev) => (prev ? ((cur - prev) / prev) * 100 : null);
+
+// A quiet secondary stat for the strip under the hero number.
+function stat(label, value, sub, deltaPct) {
   const div = document.createElement("div");
-  div.className = "tile";
+  div.className = "stat";
   const l = document.createElement("div"); l.className = "label"; l.textContent = label;
   const v = document.createElement("div"); v.className = "value"; v.innerHTML = value;
   div.append(l, v);
@@ -536,10 +663,8 @@ function tile(label, value, sub, deltaPct) {
   return div;
 }
 
-const pct = (cur, prev) => (prev ? ((cur - prev) / prev) * 100 : null);
-
-function renderTiles() {
-  const root = $("tiles");
+function renderStats() {
+  const root = $("sum-stats");
   root.textContent = "";
   const days = dailyTotals();
   const interval = intervalFor("daily");
@@ -550,8 +675,8 @@ function renderTiles() {
   const latest = days[n - 1];
   const prev = n >= 2 ? days[n - 2] : null;
   const latestDate = new Date(latest.day + "T12:00:00")
-    .toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric" });
-  root.append(tile(
+    .toLocaleString("en-US", { month: "short", day: "numeric" });
+  root.append(stat(
     `Latest day · ${latestDate}`,
     `${fmtNum(latest.value)} <small>${esc(unit)}</small>`,
     "vs previous day",
@@ -560,7 +685,7 @@ function renderTiles() {
 
   const wk = sumRange(days, Math.max(0, n - 7), n, "value");
   const wkPrev = n > 7 ? sumRange(days, Math.max(0, n - 14), n - 7, "value") : null;
-  root.append(tile(
+  root.append(stat(
     "Last 7 days",
     `${fmtNum(wk)} <small>${esc(unit)}</small>`,
     "vs prior 7 days",
@@ -570,11 +695,21 @@ function renderTiles() {
   const moCost = sumRange(days, Math.max(0, n - 30), n, "cost");
   const moCostPrev = n > 30 ? sumRange(days, Math.max(0, n - 60), n - 30, "cost") : null;
   if (moCost != null) {
-    root.append(tile(
-      "Last 30 days cost (est.)",
+    root.append(stat(
+      "30-day cost (est.)",
       fmtUsd(moCost, 0),
       "vs prior 30 days",
       moCostPrev != null ? pct(moCost, moCostPrev) : null,
+    ));
+  }
+
+  const base = alwaysOnEstimate(days);
+  if (base) {
+    root.append(stat(
+      "Always-on load",
+      `${fmtNum(base.kw * 1000, 0)} <small>W</small>`,
+      base.perMo != null ? `≈ ${fmtUsd(base.perMo, 0)}/mo baseline` : "baseline draw",
+      null,
     ));
   }
 
@@ -583,13 +718,143 @@ function renderTiles() {
     const last = [...bills].sort((a, b) => (a.period_end < b.period_end ? -1 : 1)).at(-1);
     const period = new Date(last.period_end + "T12:00:00")
       .toLocaleString("en-US", { month: "short", day: "numeric" });
-    root.append(tile(
+    root.append(stat(
       `Latest bill · thru ${period}`,
       fmtUsd(last.total_amount_usd),
       last.estimated ? "estimated" : "",
       null,
     ));
   }
+}
+
+// Always-on (phantom) load: the 5th-percentile bucket of the last week of
+// fine-grained data, read as continuous draw, priced at the recent effective
+// rate. Hourly buckets are preferred so appliance cycles (fridge) average in
+// rather than being cherry-picked at their off moments. kWh data only.
+function alwaysOnEstimate(days) {
+  const res = state.data.intervals?.hourly ? "hourly" : state.data.intervals?.quarter_hour ? "quarter_hour" : null;
+  if (!res) return null;
+  const interval = intervalFor(res);
+  if (!interval || interval.unit !== "kWh") return null;
+  const hours = res === "hourly" ? 1 : 0.25;
+  const totals = new Map();
+  for (const entry of interval.series) {
+    for (let i = 0; i < entry.starts.length; i++) {
+      if (entry.values[i] != null)
+        totals.set(entry.starts[i], (totals.get(entry.starts[i]) ?? 0) + entry.values[i]);
+    }
+  }
+  const starts = [...totals.keys()].sort();
+  const week = starts.slice(-Math.round(7 * 24 / hours)).map((s) => totals.get(s));
+  if (week.length < 48 / hours) return null; // need at least ~2 days of buckets
+  week.sort((a, b) => a - b);
+  const kw = week[Math.floor(week.length * 0.05)] / hours;
+  if (!(kw > 0)) return null;
+  // Effective rate over the last 30 days of daily totals.
+  const n = days.length;
+  const moCost = sumRange(days, Math.max(0, n - 30), n, "cost");
+  const moUsage = sumRange(days, Math.max(0, n - 30), n, "value");
+  const rate = moCost != null && moUsage > 0 ? moCost / moUsage : null;
+  return { kw, perMo: rate != null ? kw * 24 * 30.4 * rate : null };
+}
+
+// Per-contributor cost (usage if no costs) on the most recent metered day:
+// each known device plus "Everything else", with its share of the day.
+function dayBreakdown() {
+  const interval = intervalFor("daily");
+  if (!interval || !interval.series.length) return null;
+  const comps = componentEntries("daily");
+  if (!comps.length) return null;
+  const entries = [remainderEntry("daily", comps), ...comps].filter(Boolean);
+  let day = null;
+  for (const entry of interval.series) {
+    const last = entry.starts[entry.starts.length - 1];
+    if (last && (!day || last > day)) day = last;
+  }
+  if (!day) return null;
+  day = day.slice(0, 10);
+  // Run-rate window: the 30 days up to and including the shown day.
+  const cutoff = new Date(new Date(day + "T12:00:00").getTime() - 30 * 86400e3)
+    .toISOString().slice(0, 10);
+  const rows = entries
+    .map((entry) => {
+      let value = null, cost = null, aggValue = 0, aggCost = 0;
+      const aggDays = new Set();
+      for (let i = 0; i < entry.starts.length; i++) {
+        const d = entry.starts[i].slice(0, 10);
+        if (d === day) {
+          if (entry.values[i] != null) value = (value ?? 0) + entry.values[i];
+          if (entry.costs && entry.costs[i] != null) cost = (cost ?? 0) + entry.costs[i];
+        }
+        if (d > cutoff && d <= day && entry.values[i] != null) {
+          aggDays.add(d);
+          aggValue += entry.values[i];
+          if (entry.costs && entry.costs[i] != null) aggCost += entry.costs[i];
+        }
+      }
+      return { name: entry.name, value, cost, aggValue, aggCost, aggDays: aggDays.size };
+    })
+    .filter((row) => row.value != null || row.cost != null);
+  if (!rows.length) return null;
+  const hasCost = rows.some((row) => row.cost != null);
+  const amount = (row) => (hasCost ? row.cost : row.value) ?? 0;
+  rows.sort((a, b) => amount(b) - amount(a));
+  return { day, rows, hasCost, unit: interval.unit, total: rows.reduce((s, r) => s + amount(r), 0) };
+}
+
+function renderBreakdown() {
+  const card = $("breakdown-card");
+  const bk = dayBreakdown();
+  card.hidden = !bk;
+  if (!bk) return;
+  const t = tokens();
+  const fmt = bk.hasCost ? (x) => fmtUsd(x) : (x) => `${fmtNum(x)} ${bk.unit}`;
+  $("breakdown-label").textContent = bk.hasCost ? "Cost by device" : "Usage by device";
+  const dayLabel = new Date(bk.day + "T12:00:00")
+    .toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  $("breakdown-day").textContent = `${dayLabel} · ${fmt(bk.total)} total`;
+
+  const list = $("breakdown-list");
+  list.textContent = "";
+  const cell = (cls, text) => {
+    const span = document.createElement("span");
+    span.className = cls;
+    span.textContent = text;
+    return span;
+  };
+
+  const head = document.createElement("li");
+  head.className = "bk-head";
+  head.append(cell("", ""), cell("bk-name", "Source"), cell("bk-share", "Share"),
+    cell("bk-value", "Day"), cell("bk-permo", "Est. / mo"));
+  list.append(head);
+
+  for (const row of bk.rows) {
+    const li = document.createElement("li");
+    const dot = document.createElement("span");
+    dot.className = "bk-dot";
+    dot.style.background = t.series[paletteSlot(row.name) % t.series.length];
+    const amount = (bk.hasCost ? row.cost : row.value) ?? 0;
+    const share = bk.total > 0 ? `${((amount / bk.total) * 100).toFixed(0)}%` : "";
+    // Monthly run-rate from the row's 30-day daily average.
+    const aggAmt = bk.hasCost ? row.aggCost : row.aggValue;
+    const perMo = row.aggDays >= 2 ? (aggAmt / row.aggDays) * 30.4 : null;
+    const perMoText = perMo == null ? "–"
+      : bk.hasCost ? `≈ ${fmtUsd(perMo, perMo >= 10 ? 0 : 2)}`
+      : `≈ ${fmtNum(perMo, 0)} ${bk.unit}`;
+    li.append(dot,
+      cell("bk-name", row.name),
+      cell("bk-share", share),
+      cell("bk-value", fmt(bk.hasCost ? row.cost : row.value)),
+      cell("bk-permo", perMoText));
+    list.append(li);
+  }
+}
+
+function renderSummary() {
+  renderStats();
+  renderBreakdown();
+  updateWindowSum();
 }
 
 // ------------------------------------------------------------- table views --
@@ -631,16 +896,13 @@ function fillTable(name) {
   if (name === "usage") {
     const interval = intervalFor(state.res);
     if (!interval) return;
-    const offsets = excludedOffsets(state.res);
     const rows = [];
     for (const entry of interval.series) {
       for (let i = 0; i < entry.starts.length; i++) {
-        const off = offsets ? offsets.get(new Date(entry.starts[i]).getTime()) : null;
         rows.push({
           start: entry.starts[i], stream: entry.name,
-          value: entry.values[i] == null || !off ? entry.values[i] : entry.values[i] - off.value,
-          cost: !entry.costs || entry.costs[i] == null ? null
-            : off ? entry.costs[i] - off.cost : entry.costs[i],
+          value: entry.values[i],
+          cost: !entry.costs || entry.costs[i] == null ? null : entry.costs[i],
         });
       }
     }
@@ -720,33 +982,50 @@ wireSeg("metric-seg", "metric", (value) => {
   state.metric = value;
   renderUsage();
 });
+// Total mode folds every device in, so the chips go inert until it's left.
+function syncChipState() {
+  $("device-chips").classList.toggle("off", state.view === "total");
+}
+
+wireSeg("view-seg", "view", (value) => {
+  localStorage.setItem("view", value);
+  state.view = value;
+  syncChipState();
+  renderUsage();
+});
 
 syncSeg("range-seg", "range", state.rangeDays);
 syncSeg("res-seg", "res", state.res);
 syncSeg("metric-seg", "metric", state.metric);
+syncSeg("view-seg", "view", state.view);
 
-// One chip per known device (devices/*.json); active = subtracted from charts.
+// One chip per known device (devices/*.json); active = broken out as its own
+// series, inactive = folded into "Everything else". Toggling one never
+// changes a total, only how the meter is sliced.
 function renderDeviceChips() {
-  const names = [...new Set(
-    Object.values(state.data.intervals || {})
-      .flatMap((iv) => iv.devices || [])
-      .map((dev) => dev.name),
-  )];
+  const names = deviceNames();
   const root = $("device-chips");
   root.textContent = "";
   root.hidden = !names.length;
+  $("view-seg").hidden = !names.length;
+  syncChipState();
   for (const name of names) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = `− ${name}`;
-    btn.title = `Subtract ${name} from the charts`;
-    btn.classList.toggle("active", state.excluded.has(name));
+    // Same palette slot as the device's series, so chip and legend match.
+    const dot = document.createElement("span");
+    dot.className = "chip-dot";
+    dot.style.background = `var(--series-${(paletteSlot(name) % 4) + 1})`;
+    const label = document.createElement("span");
+    label.textContent = name;
+    btn.append(dot, label);
+    btn.title = `Break ${name} out of "Everything else"`;
+    btn.classList.toggle("active", !state.folded.has(name));
     btn.addEventListener("click", () => {
-      state.excluded[state.excluded.has(name) ? "delete" : "add"](name);
-      localStorage.setItem("excluded", JSON.stringify([...state.excluded]));
-      btn.classList.toggle("active", state.excluded.has(name));
-      renderAll();
-      if (!$("usage-table").hidden) fillTable("usage");
+      state.folded[state.folded.has(name) ? "delete" : "add"](name);
+      localStorage.setItem("folded", JSON.stringify([...state.folded]));
+      btn.classList.toggle("active", !state.folded.has(name));
+      renderUsage();
     });
     root.append(btn);
   }
@@ -756,7 +1035,7 @@ function renderDeviceChips() {
 
 function renderAll() {
   if (!state.data) return;
-  renderTiles();
+  renderSummary();
   renderUsage();
   renderMonthly();
   renderBills();
