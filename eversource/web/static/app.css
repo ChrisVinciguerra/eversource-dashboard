@@ -345,6 +345,8 @@ main {
   flex: none;
 }
 .chips button:not(.active) .chip-dot { opacity: 0.35; }
+/* Total mode folds every device in; the chips go inert until it's left. */
+.chips.off { opacity: 0.45; pointer-events: none; }
 
 /* -------------------------------------------------------------- cards --- */
 
