@@ -9,12 +9,14 @@ const $ = (id) => document.getElementById(id);
 
 // The filter picks survive reloads.
 const savedRange = localStorage.getItem("range");
+const savedView = localStorage.getItem("view");
 const state = {
   data: null,
   res: localStorage.getItem("res") || "quarter_hour", // daily | hourly | quarter_hour
   metric: localStorage.getItem("metric") || "usage",  // usage | cost
-  // How the device breakdown is drawn: separate "lines" or "stacked" areas.
-  view: localStorage.getItem("view") === "stacked" ? "stacked" : "lines",
+  // Device breakdown as separate "lines" (default) or "stacked" areas, or
+  // "total": the one net series with every device folded in.
+  view: savedView === "stacked" || savedView === "total" ? savedView : "lines",
   rangeDays: savedRange === "all" ? "all" : Number(savedRange) || 1, // days or "all"
   // Known devices left inside "Everything else" instead of broken out.
   folded: new Set(JSON.parse(localStorage.getItem("folded") || "[]")),
@@ -241,9 +243,9 @@ function renderUsage() {
   const unitLabel = metric === "cost" ? "$" : interval.unit;
   const valueFmt = metric === "cost" ? (x) => fmtUsd(x, isDaily ? 2 : 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
 
-  // With known devices the chart always splits the meter into each unfolded
-  // device plus "Everything else"; with none, it's the plain metered series.
-  const comps = componentEntries(state.res);
+  // Lines/stacked split the meter into each unfolded device plus "Everything
+  // else"; total mode (or no known devices) is the plain metered series.
+  const comps = state.view === "total" ? [] : componentEntries(state.res);
   const split = comps.length > 0;
   const stacked = split && state.view === "stacked";
   const shown = comps.filter((dev) => !state.folded.has(dev.name));
@@ -980,9 +982,15 @@ wireSeg("metric-seg", "metric", (value) => {
   state.metric = value;
   renderUsage();
 });
+// Total mode folds every device in, so the chips go inert until it's left.
+function syncChipState() {
+  $("device-chips").classList.toggle("off", state.view === "total");
+}
+
 wireSeg("view-seg", "view", (value) => {
   localStorage.setItem("view", value);
   state.view = value;
+  syncChipState();
   renderUsage();
 });
 
@@ -1000,6 +1008,7 @@ function renderDeviceChips() {
   root.textContent = "";
   root.hidden = !names.length;
   $("view-seg").hidden = !names.length;
+  syncChipState();
   for (const name of names) {
     const btn = document.createElement("button");
     btn.type = "button";
