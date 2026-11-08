@@ -73,7 +73,7 @@ def cmd_update(args: argparse.Namespace, cfg: Config) -> None:
 def cmd_serve(args: argparse.Namespace, cfg: Config) -> None:
     from .web import serve
 
-    serve(port=args.port, open_browser=not args.no_open)
+    serve(port=args.port, open_browser=not args.no_open, host=args.host)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +131,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_cmd.add_argument(
         "--no-open", action="store_true", help="don't open the browser"
+    )
+    serve_cmd.add_argument(
+        "--host", default="127.0.0.1",
+        help="interface to bind (default 127.0.0.1; 0.0.0.0 to serve the LAN)",
     )
     serve_cmd.set_defaults(func=cmd_serve)
 
