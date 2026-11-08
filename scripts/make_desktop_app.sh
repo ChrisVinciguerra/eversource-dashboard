@@ -1,12 +1,13 @@
 #!/bin/zsh
 # Create (or refresh) ~/Desktop/Energy.app — a double-clickable launcher for
-# the dashboard. The app starts `eversource.py serve` from this repo, or just
-# opens the browser if the server is already running.
+# the dashboard, now hosted on the home server (CT 101). Pass a URL to
+# override; use --local for the old behavior of serving from this repo.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 app="$HOME/Desktop/Energy.app"
 port=8537
+url="${1:-https://energy.int.chrisv.us/}"
 
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
@@ -25,9 +26,10 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-cat > "$app/Contents/MacOS/energy" <<EOF
+if [ "$url" = "--local" ]; then
+  # Old behavior: start (or reuse) a local server from this repo.
+  cat > "$app/Contents/MacOS/energy" <<EOF
 #!/bin/zsh
-# Launches the Eversource energy dashboard (or opens it if already running).
 # The script must exit right away — if it stayed alive as the server, macOS
 # would treat the app as "already open" and ignore the next double-click.
 export PATH="/opt/homebrew/bin:\$HOME/.local/bin:/usr/local/bin:\$PATH"
@@ -39,6 +41,12 @@ fi
 nohup uv run eversource.py serve >/dev/null 2>&1 &
 disown
 EOF
+else
+  cat > "$app/Contents/MacOS/energy" <<EOF
+#!/bin/zsh
+open "$url"
+EOF
+fi
 chmod +x "$app/Contents/MacOS/energy"
 
 cp "$repo/assets/energy.icns" "$app/Contents/Resources/energy.icns"
