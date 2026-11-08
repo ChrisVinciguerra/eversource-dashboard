@@ -84,7 +84,11 @@ class OktaTokens(TypedDict, total=False):
 
 
 def keychain_get(username: str) -> str | None:
-    """Return the stored password for `username`, or None if there isn't one."""
+    """Return the stored password for `username`, or None if there isn't one.
+
+    Off macOS (no `security` command) a plain file next to config.json is the
+    fallback: ~/.config/eversource-cli/password, mode 0600.
+    """
     try:
         done = subprocess.run(
             ["security", "find-generic-password",
@@ -92,8 +96,16 @@ def keychain_get(username: str) -> str | None:
             capture_output=True, text=True, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
+        return _password_file_get()
     return done.stdout.rstrip("\n") or None
+
+
+def _password_file_get() -> str | None:
+    try:
+        from .config import CONFIG_DIR
+        return (CONFIG_DIR / "password").read_text().strip() or None
+    except OSError:
+        return None
 
 
 def keychain_set(username: str, password: str) -> None:
