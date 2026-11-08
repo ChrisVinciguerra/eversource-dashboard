@@ -57,15 +57,21 @@ class Job:
     _mfa_ready: threading.Event = field(default_factory=threading.Event)
 
     def state(self) -> Json:
+        if self.running:
+            status = "running"
+        elif self.error is not None:
+            status = "error"
+        else:
+            status = "ok"
         return {
             "kind": self.kind,
+            "status": status,
             "running": self.running,
             "log": self.log,
             "error": self.error,
             "needs_login": self.needs_login,
             "needs_mfa": self.mfa_prompt is not None and self._mfa_code is None,
             "mfa_prompt": self.mfa_prompt,
-            "ok": not self.running and self.error is None,
         }
 
     def ask_for_mfa(self, description: str) -> str:
@@ -190,7 +196,7 @@ def api_mfa(body: MfaCode) -> JSONResponse:
 
 @app.get("/api/job")
 def api_job() -> Json:
-    return _job.state() if _job is not None else {"kind": None, "running": False}
+    return _job.state() if _job is not None else {"kind": None, "status": "idle", "running": False}
 
 
 @app.middleware("http")
