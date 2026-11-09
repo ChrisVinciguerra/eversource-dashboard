@@ -17,11 +17,7 @@ def serve(port: int = 8537, open_browser: bool = True, host: str = "127.0.0.1") 
 
 
 def serve_main() -> None:
-    """`uv run serve` entry point — headless server, HOST/PORT from env.
-
-    Same contract as the other homelab apps (seedhost-web, backup-timeline):
-    install with `uv sync`, run with `uv run serve`.
-    """
+    """`uv run serve` — headless server, HOST/PORT from env."""
     import os
 
     serve(port=int(os.environ.get("PORT", "8537")),
