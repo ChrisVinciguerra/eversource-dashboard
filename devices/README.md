@@ -48,7 +48,7 @@ may draw through it:
 
 ```json
 {
-  "name": "Anker charger",
+  "name": "Charging station",
   "overlaps_with": ["My MacBook"],
   "readings": {
     "start": "…", "end": "…",
@@ -89,21 +89,3 @@ and publishes a device file here. Install it as a launchd agent with:
 ```sh
 scripts/install_mac_power_agent.sh "My MacBook" macbook.json
 ```
-
-## Recording an Anker Prime charging station (A91B2)
-
-`scripts/anker_power_recorder.py` reads the per-port power an Anker Prime
-240W charging station (model A91B2) streams over Anker's cloud MQTT — there
-is no local API — and publishes it here with the per-port breakdown and an
-`overlaps_with` naming the Mac, so a laptop charging through it isn't counted
-twice (see above). Install it with:
-
-```sh
-scripts/install_anker_power_agent.sh you@example.com "Anker charger" "My MacBook"
-```
-
-The account must be the one that *owns* the charger (not a shared member),
-and the charger must be on Wi-Fi. The password is stored in the macOS
-keychain. Caveats: the two AC outlets are switched but not metered (only the
-4 USB-C + 2 USB-A ports report power), and nothing records while the Mac
-running the agent sleeps.
