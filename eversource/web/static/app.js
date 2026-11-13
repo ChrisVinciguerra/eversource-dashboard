@@ -1057,7 +1057,7 @@ async function loadData() {
   } else {
     $("data-through").textContent = "";
   }
-  $("stale-badge").hidden = !dataIsStale();
+  checkFreshness();
   // Cost toggle only makes sense when a cost series exists.
   const anyCost = Object.values(state.data.intervals || {})
     .some((iv) => iv.series.some((s) => s.costs));
@@ -1100,7 +1100,10 @@ async function pollJob() {
         } else {
           setBanner({});
           if (job.kind === "login") startUpdate();
-          else await loadData();
+          else {
+            localStorage.setItem("checkedAt", String(Date.now()));
+            await loadData();
+          }
         }
         return;
       }
@@ -1121,7 +1124,7 @@ async function pollJob() {
 }
 
 async function startUpdate() {
-  sessionStorage.setItem("lastUpdate", String(Date.now()));
+  localStorage.setItem("lastUpdate", String(Date.now()));
   await fetch("/api/update", { method: "POST" });
   pollJob();
 }
@@ -1179,28 +1182,18 @@ $("mfa-form").addEventListener("submit", async (event) => {
   });
 });
 
-// Newer data should exist by now, judged by the historical posting pattern
-// (reads arrive in increment_minutes blocks, typical_lag_minutes after they
-// end — learned server-side from past exports).
-function dataIsStale() {
-  const last = state.data?.last_read;
-  if (!last) return true;
-  const f = state.data.freshness;
-  if (!f) return last.slice(0, 10) < new Date().toLocaleDateString("en-CA");
-  const inc = f.increment_minutes * 60e3;
-  const avail = Date.now() - f.typical_lag_minutes * 60e3;
-  const midnight = new Date(avail).setHours(0, 0, 0, 0);
-  const expected = midnight + Math.floor((avail - midnight) / inc) * inc;
-  return new Date(last).getTime() < expected;
-}
+// Reads post in ~4-hour blocks, so data over 4 hours old *might* have more
+// behind it: pull (cheap, often empty), at most once per RECHECK_MS. A
+// successful pull — even an empty one — clears the badge for that long.
+const STALE_MS = 4 * 3600e3;
+const RECHECK_MS = 30 * 60e3;
 
-// Show the badge whenever the data is out of date, and (gently) refresh:
-// at most one auto-update per 15 minutes, never on top of a running job.
 function checkFreshness() {
-  const stale = dataIsStale();
-  $("stale-badge").hidden = !stale;
-  const last = Number(sessionStorage.getItem("lastUpdate") || 0);
-  if (stale && !polling && Date.now() - last > 15 * 60e3) startUpdate();
+  const last = state.data?.last_read;
+  const stale = !last || Date.now() - new Date(last).getTime() > STALE_MS;
+  const since = (key) => Date.now() - Number(localStorage.getItem(key) || 0);
+  $("stale-badge").hidden = !stale || since("checkedAt") < RECHECK_MS;
+  if (stale && !polling && since("lastUpdate") >= RECHECK_MS) startUpdate();
 }
 
 // Re-pull device specs that name a remote source (the server may be asleep,
