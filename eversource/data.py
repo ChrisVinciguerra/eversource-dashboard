@@ -9,6 +9,11 @@ the web UI renders from.
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
+from functools import reduce
+from math import gcd
+from statistics import median
 from typing import Any
 
 import pandas as pd
@@ -140,6 +145,39 @@ def add_effective_rate_cost(
     return rate_by_day
 
 
+def export_freshness() -> Json | None:
+    """How current the data *can* be, learned from the historical pattern of
+    when each export was taken vs the data boundary it reached (observed:
+    reads post in 4-hour blocks, landing roughly 8 hours after they end)."""
+    lags: dict[datetime, float] = {}  # boundary -> smallest minutes-behind seen
+    offsets = {1440}  # minutes past midnight of each boundary, for the grid size
+    for folder in EXPORT_ROOT.glob(EXPORT_GLOB):
+        stamp = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})$", folder.name)
+        csv = next(
+            (p for n in reversed(INTERVAL_DATASETS) if (p := folder / f"{n}.csv").is_file()),
+            None,
+        )
+        if not stamp or csv is None:
+            continue
+        ends = pd.read_csv(csv, usecols=["end"])["end"].dropna()
+        if ends.empty:
+            continue
+        taken = datetime.strptime(
+            "{}T{}:{}:{}".format(*stamp.groups()), "%Y-%m-%dT%H:%M:%S"
+        ).astimezone()
+        boundary = max(datetime.fromisoformat(s) for s in ends)
+        lag = (taken - boundary).total_seconds() / 60
+        if lag >= 0:
+            lags[boundary] = min(lag, lags.get(boundary, lag))
+            offsets.add(boundary.hour * 60 + boundary.minute)
+    if not lags:
+        return None
+    return {
+        "increment_minutes": max(reduce(gcd, offsets), 15),
+        "typical_lag_minutes": round(median(lags.values())),
+    }
+
+
 # ----------------------------------------------------------- JSON payload ---
 
 
@@ -226,6 +264,7 @@ def build_payload() -> Json:
         "monthly": _records(data.get("monthly")),
         "bills": _records(bills),
         "last_read": last_read,
+        "freshness": export_freshness(),
     }
 
 

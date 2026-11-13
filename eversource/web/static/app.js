@@ -1057,6 +1057,7 @@ async function loadData() {
   } else {
     $("data-through").textContent = "";
   }
+  $("stale-badge").hidden = !dataIsStale();
   // Cost toggle only makes sense when a cost series exists.
   const anyCost = Object.values(state.data.intervals || {})
     .some((iv) => iv.series.some((s) => s.costs));
@@ -1099,10 +1100,7 @@ async function pollJob() {
         } else {
           setBanner({});
           if (job.kind === "login") startUpdate();
-          else {
-            sessionStorage.setItem("lastUpdate", String(Date.now()));
-            await loadData();
-          }
+          else await loadData();
         }
         return;
       }
@@ -1123,6 +1121,7 @@ async function pollJob() {
 }
 
 async function startUpdate() {
+  sessionStorage.setItem("lastUpdate", String(Date.now()));
   await fetch("/api/update", { method: "POST" });
   pollJob();
 }
@@ -1180,12 +1179,28 @@ $("mfa-form").addEventListener("submit", async (event) => {
   });
 });
 
+// Newer data should exist by now, judged by the historical posting pattern
+// (reads arrive in increment_minutes blocks, typical_lag_minutes after they
+// end — learned server-side from past exports).
 function dataIsStale() {
-  if (!state.data || !state.data.last_read) return true;
-  const today = new Date();
-  const localDay = (d) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  return state.data.last_read.slice(0, 10) < localDay(today);
+  const last = state.data?.last_read;
+  if (!last) return true;
+  const f = state.data.freshness;
+  if (!f) return last.slice(0, 10) < new Date().toLocaleDateString("en-CA");
+  const inc = f.increment_minutes * 60e3;
+  const avail = Date.now() - f.typical_lag_minutes * 60e3;
+  const midnight = new Date(avail).setHours(0, 0, 0, 0);
+  const expected = midnight + Math.floor((avail - midnight) / inc) * inc;
+  return new Date(last).getTime() < expected;
+}
+
+// Show the badge whenever the data is out of date, and (gently) refresh:
+// at most one auto-update per 15 minutes, never on top of a running job.
+function checkFreshness() {
+  const stale = dataIsStale();
+  $("stale-badge").hidden = !stale;
+  const last = Number(sessionStorage.getItem("lastUpdate") || 0);
+  if (stale && !polling && Date.now() - last > 15 * 60e3) startUpdate();
 }
 
 // Re-pull device specs that name a remote source (the server may be asleep,
@@ -1204,13 +1219,9 @@ async function init() {
   await loadData();
   refreshDevices();
   const job = await (await fetch("/api/job")).json();
-  if (job.running) {
-    pollJob();
-    return;
-  }
-  // Auto-refresh on open, but not repeatedly within the same browsing session.
-  const last = Number(sessionStorage.getItem("lastUpdate") || 0);
-  if (dataIsStale() && Date.now() - last > 15 * 60e3) startUpdate();
+  if (job.running) pollJob();
+  else checkFreshness();
+  setInterval(checkFreshness, 60e3);
 }
 
 init();
