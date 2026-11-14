@@ -1031,6 +1031,75 @@ function renderDeviceChips() {
   }
 }
 
+// -------------------------------------------------------------------- flags --
+// Anomaly headlines computed server-side from the raw meter reads (no device
+// knowledge). The badge shows only that something was flagged; the evidence
+// appears when a headline is clicked, as a zoom of the usage chart.
+
+function renderFlags() {
+  const flags = state.data.flags || [];
+  const wrap = $("flags-wrap");
+  wrap.hidden = !flags.length;
+  if (!flags.length) {
+    $("flags-panel").hidden = true;
+    return;
+  }
+  $("flags-btn").textContent = `⚑ ${flags.length} worth a look`;
+  const panel = $("flags-panel");
+  panel.textContent = "";
+  for (const flag of flags) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const head = document.createElement("span");
+    head.textContent = flag.headline;
+    const detail = document.createElement("span");
+    detail.className = "flag-detail";
+    detail.textContent = flag.detail;
+    btn.append(head, detail);
+    btn.addEventListener("click", () => {
+      closeFlags();
+      jumpToFlag(flag);
+    });
+    panel.append(btn);
+  }
+}
+
+function closeFlags() {
+  $("flags-panel").hidden = true;
+  $("flags-btn").setAttribute("aria-expanded", "false");
+}
+
+$("flags-btn").addEventListener("click", (event) => {
+  event.stopPropagation();
+  const panel = $("flags-panel");
+  panel.hidden = !panel.hidden;
+  $("flags-btn").setAttribute("aria-expanded", String(!panel.hidden));
+});
+document.addEventListener("click", (event) => {
+  if (!$("flags-wrap").contains(event.target)) closeFlags();
+});
+
+// Zoom the usage chart to a flag's days (finest resolution, half a day of
+// context on either side). The jump is a look, so the saved resolution and
+// range picks are left alone.
+function jumpToFlag(flag) {
+  const res = state.data.intervals?.quarter_hour ? "quarter_hour"
+    : state.data.intervals?.hourly ? "hourly" : state.res;
+  if (res !== state.res) {
+    state.res = res;
+    syncSeg("res-seg", "res", res);
+  }
+  renderUsage();
+  const from = new Date(flag.date + "T00:00:00").getTime();
+  const to = new Date(flag.end_date + "T00:00:00").getTime() + 86400e3;
+  charts["usage-chart"].dispatchAction({
+    type: "dataZoom",
+    startValue: from - 43200e3,
+    endValue: to + 43200e3,
+  });
+  $("usage-card").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 // ------------------------------------------------------------ data + jobs --
 
 function renderAll() {
@@ -1067,6 +1136,7 @@ async function loadData() {
     syncSeg("metric-seg", "metric", "usage");
   }
   renderDeviceChips();
+  renderFlags();
   renderAll();
 }
 
