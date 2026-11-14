@@ -19,11 +19,7 @@
   <div class="topbar-right">
     <span id="data-through" class="status-text"></span>
     <span id="stale-badge" class="stale-badge" hidden>Out of date</span>
-    <div class="flags" id="flags-wrap" hidden>
-      <button id="flags-btn" class="flags-btn" type="button"
-              aria-haspopup="true" aria-expanded="false"></button>
-      <div id="flags-panel" class="flags-panel" hidden></div>
-    </div>
+    <button id="history-btn" class="btn btn-ghost" type="button">History</button>
     <button id="update-btn" class="btn" type="button">Update</button>
     <button id="theme-btn" class="btn btn-ghost" type="button" aria-label="Toggle theme">◐</button>
   </div>
@@ -68,99 +64,121 @@
 </dialog>
 
 <main>
-  <section class="summary" aria-label="Summary">
-    <div class="card summary-hero">
-      <div class="overline" id="hero-label">Cost in view</div>
-      <div class="hero-value" id="hero-value">–</div>
-      <div class="hero-sub" id="hero-sub"></div>
-      <div class="hero-delta" id="hero-delta"></div>
-      <div class="hero-meta" id="hero-meta"></div>
-      <div class="summary-stats" id="sum-stats"></div>
-    </div>
-    <div class="card summary-breakdown" id="breakdown-card" hidden>
-      <div class="overline" id="breakdown-label">Cost by device</div>
-      <div class="hero-sub" id="breakdown-day"></div>
-      <ul class="breakdown-list" id="breakdown-list"></ul>
-    </div>
-  </section>
+  <p id="tagline" class="tagline" hidden></p>
 
-  <section class="filters" aria-label="Filters">
-    <div class="seg" id="range-seg" role="group" aria-label="Date range">
-      <button type="button" data-range="1" class="active">1D</button>
-      <button type="button" data-range="7">7D</button>
-      <button type="button" data-range="30">30D</button>
-      <button type="button" data-range="90">90D</button>
-      <button type="button" data-range="365">1Y</button>
-      <button type="button" data-range="all">All</button>
-    </div>
-    <div class="seg" id="res-seg" role="group" aria-label="Resolution">
-      <button type="button" data-res="daily">Day</button>
-      <button type="button" data-res="hourly">Hour</button>
-      <button type="button" data-res="quarter_hour" class="active">15 min</button>
-    </div>
-    <div class="seg" id="metric-seg" role="group" aria-label="Measure">
-      <button type="button" data-metric="usage" class="active">Usage</button>
-      <button type="button" data-metric="cost">Cost</button>
-    </div>
-    <div class="seg" id="view-seg" role="group" aria-label="View" hidden>
-      <button type="button" data-view="lines" class="active">Lines</button>
-      <button type="button" data-view="stacked">Stacked</button>
-      <button type="button" data-view="total">Total</button>
-    </div>
-    <div class="seg chips" id="device-chips" role="group" aria-label="Break out known devices" hidden></div>
-  </section>
+  <div class="layout">
+    <div class="charts-col">
 
-  <section class="card" id="usage-card">
-    <div class="card-head">
-      <h2 id="usage-title">Usage</h2>
-      <button type="button" class="btn btn-ghost table-toggle" data-for="usage">Table</button>
-    </div>
-    <div class="chart" id="usage-chart"></div>
-    <div class="zoom-fine" id="zoom-fine" hidden>
-      <span class="zoom-fine-edge" id="zoom-fine-lo"></span>
-      <div class="zoom-fine-track" id="zoom-fine-track" aria-label="Fine-adjust time window">
-        <div class="zoom-fine-win" id="zoom-fine-win"></div>
-        <div class="zoom-fine-handle" id="zoom-fine-start"></div>
-        <div class="zoom-fine-handle" id="zoom-fine-end"></div>
-      </div>
-      <span class="zoom-fine-edge" id="zoom-fine-hi"></span>
-    </div>
-    <div class="table-wrap" id="usage-table" hidden></div>
-  </section>
+      <section class="filters" aria-label="Filters">
+        <div class="seg" id="metric-seg" role="group" aria-label="Measure">
+          <button type="button" data-metric="usage" class="active">Usage</button>
+          <button type="button" data-metric="cost">Cost</button>
+        </div>
+        <div class="seg" id="view-seg" role="group" aria-label="View" hidden>
+          <button type="button" data-view="lines" class="active">Lines</button>
+          <button type="button" data-view="stacked">Stacked</button>
+          <button type="button" data-view="total">Total</button>
+        </div>
+        <div class="seg chips" id="device-chips" role="group" aria-label="Break out known devices" hidden></div>
+      </section>
 
-  <div class="card-grid">
-    <section class="card" id="monthly-usage-card" hidden>
-      <div class="card-head">
-        <h2>Billed monthly usage</h2>
-        <button type="button" class="btn btn-ghost table-toggle" data-for="monthly-usage">Table</button>
-      </div>
-      <div class="chart chart-sm" id="monthly-usage-chart"></div>
-      <div class="table-wrap" id="monthly-usage-table" hidden></div>
-    </section>
-    <section class="card" id="monthly-charge-card" hidden>
-      <div class="card-head">
-        <h2>Billed monthly charges</h2>
-        <button type="button" class="btn btn-ghost table-toggle" data-for="monthly-charge">Table</button>
-      </div>
-      <div class="chart chart-sm" id="monthly-charge-chart"></div>
-      <div class="table-wrap" id="monthly-charge-table" hidden></div>
-    </section>
+      <section class="card" id="overview-card">
+        <div class="card-head">
+          <div class="card-title">
+            <h2 id="overview-title">This cycle</h2>
+            <span id="overview-sub" class="card-sub"></span>
+          </div>
+          <div class="card-tools">
+            <div class="pager" role="group" aria-label="Billing cycle">
+              <button id="cycle-prev" type="button" aria-label="Previous cycle">‹</button>
+              <button id="cycle-next" type="button" aria-label="Next cycle">›</button>
+            </div>
+            <button type="button" class="btn btn-ghost table-toggle" data-for="overview">Table</button>
+          </div>
+        </div>
+        <div class="chart chart-overview" id="overview-chart"></div>
+        <div class="table-wrap" id="overview-table" hidden></div>
+      </section>
+
+      <section class="card" id="detail-card">
+        <div class="card-head">
+          <div class="card-title">
+            <h2 id="detail-title">Day</h2>
+            <span id="detail-sub" class="card-sub"></span>
+          </div>
+          <div class="card-tools">
+            <div class="pager" role="group" aria-label="Day">
+              <button id="day-prev" type="button" aria-label="Previous day">‹</button>
+              <button id="day-next" type="button" aria-label="Next day">›</button>
+            </div>
+            <button type="button" class="btn btn-ghost table-toggle" data-for="detail">Table</button>
+          </div>
+        </div>
+        <div class="chart" id="detail-chart"></div>
+        <div class="table-wrap" id="detail-table" hidden></div>
+      </section>
+
+    </div>
+
+    <aside class="side-col" aria-label="Summary">
+      <section class="card side-card" id="cycle-card">
+        <div class="overline" id="cycle-label">Billing cycle</div>
+        <div class="cycle-big" id="cycle-big">–</div>
+        <div class="cycle-sub" id="cycle-sub"></div>
+        <div class="progress" id="cycle-progress-track" hidden>
+          <div class="progress-fill" id="cycle-progress"></div>
+        </div>
+        <div class="progress-label" id="cycle-progress-label" hidden></div>
+        <dl class="cycle-rows" id="cycle-rows"></dl>
+      </section>
+
+      <section class="card side-card" id="devices-card" hidden>
+        <div class="overline" id="devices-label">By device</div>
+        <ul class="breakdown-list" id="devices-list"></ul>
+      </section>
+
+      <section class="card side-card" id="flags-card" hidden>
+        <div class="overline">⚑ Worth a look</div>
+        <ul class="flag-list" id="flags-list"></ul>
+        <button id="flags-more" class="btn btn-ghost flags-more" type="button" hidden></button>
+      </section>
+    </aside>
   </div>
 
-  <section class="card" id="bills-card" hidden>
-    <div class="card-head">
-      <h2>Bills</h2>
-      <button type="button" class="btn btn-ghost table-toggle" data-for="bills">Table</button>
+  <section id="history" hidden>
+    <div class="card-grid">
+      <section class="card" id="monthly-usage-card" hidden>
+        <div class="card-head">
+          <h2>Billed monthly usage</h2>
+          <button type="button" class="btn btn-ghost table-toggle" data-for="monthly-usage">Table</button>
+        </div>
+        <div class="chart chart-sm" id="monthly-usage-chart"></div>
+        <div class="table-wrap" id="monthly-usage-table" hidden></div>
+      </section>
+      <section class="card" id="monthly-charge-card" hidden>
+        <div class="card-head">
+          <h2>Billed monthly charges</h2>
+          <button type="button" class="btn btn-ghost table-toggle" data-for="monthly-charge">Table</button>
+        </div>
+        <div class="chart chart-sm" id="monthly-charge-chart"></div>
+        <div class="table-wrap" id="monthly-charge-table" hidden></div>
+      </section>
     </div>
-    <div class="chart chart-sm" id="bills-chart"></div>
-    <div class="table-wrap" id="bills-table" hidden></div>
+    <section class="card" id="bills-card" hidden>
+      <div class="card-head">
+        <h2>Bills</h2>
+        <button type="button" class="btn btn-ghost table-toggle" data-for="bills">Table</button>
+      </div>
+      <div class="chart chart-sm" id="bills-chart"></div>
+      <div class="table-wrap" id="bills-table" hidden></div>
+    </section>
   </section>
 
-  <p id="empty-note" class="status-text" hidden></p>
+  <p id="empty-note" class="status-text" hidden>No data yet — the first update fetches your last year of usage.</p>
 </main>
 
 <footer class="foot">
-  <span>Cost on interval charts is derived: usage × the effective rate (total bill ÷ billed usage) of its billing period.</span>
+  <span>Cost is derived: usage × the effective rate (total bill ÷ billed usage) of its billing period. Projections extrapolate the current cycle's daily pace.</span>
 </footer>
 
 <script src="app.js"></script>
