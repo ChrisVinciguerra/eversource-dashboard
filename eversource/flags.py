@@ -16,6 +16,7 @@ timezone conversion happens here.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date, timedelta
 from statistics import median
 
@@ -55,23 +56,22 @@ def compute_flags(frame: pd.DataFrame, hours_per_bucket: float) -> list[Json]:
     `frame` is a merged interval frame (start/value, possibly several streams
     summed together here); `hours_per_bucket` is 0.25 or 1.
     """
-    buckets: dict[str, float] = {}  # "YYYY-MM-DDTHH:MM" -> kWh
+    buckets: dict[str, float] = defaultdict(float)  # "YYYY-MM-DDTHH:MM" -> kWh
     for start, value in zip(frame["start"], frame["value"]):
         if pd.notna(value):
-            key = str(start)[:16]
-            buckets[key] = buckets.get(key, 0.0) + float(value)
+            buckets[str(start)[:16]] += float(value)
     if not buckets:
         return []
 
-    night: dict[str, list[float]] = {}
-    day_total: dict[str, float] = {}
-    day_count: dict[str, int] = {}
+    night: dict[str, list[float]] = defaultdict(list)
+    day_total: dict[str, float] = defaultdict(float)
+    day_count: dict[str, int] = defaultdict(int)
     for key, kwh in buckets.items():
         day, hour = key[:10], int(key[11:13])
-        day_total[day] = day_total.get(day, 0.0) + kwh
-        day_count[day] = day_count.get(day, 0) + 1
+        day_total[day] += kwh
+        day_count[day] += 1
         if hour in NIGHT_HOURS:
-            night.setdefault(day, []).append(kwh)
+            night[day].append(kwh)
 
     days = sorted(day_total)
     flags = _overnight_flags(days, night, hours_per_bucket)
@@ -119,18 +119,16 @@ def _overnight_flags(
         when = f"since {_fmt_day(start)}" if ongoing else (
             _fmt_day(start) if start == end else f"{_fmt_day(start)}–{_fmt_day(end)}"
         )
-        flags.append(
-            {
-                "kind": "overnight_baseline",
-                "date": start,
-                "end_date": end,
-                "ongoing": ongoing,
-                "watts": round(kw * 1000),
-                "typical_watts": round(typical * 1000),
-                "headline": f"New overnight load {when}",
-                "detail": f"the 1–5am floor ran ~{_fmt_w(kw)}, typically ~{_fmt_w(typical)}",
-            }
-        )
+        flags.append({
+            "kind": "overnight_baseline",
+            "date": start,
+            "end_date": end,
+            "ongoing": ongoing,
+            "watts": round(kw * 1000),
+            "typical_watts": round(typical * 1000),
+            "headline": f"New overnight load {when}",
+            "detail": f"the 1–5am floor ran ~{_fmt_w(kw)}, typically ~{_fmt_w(typical)}",
+        })
 
     for item in elevated:
         if run and date.fromisoformat(item[0]) - date.fromisoformat(run[-1][0]) != timedelta(days=1):
@@ -150,28 +148,26 @@ def _high_day_flags(
     """Full days far above the median of their recent same weekdays."""
     expected = int(24 / hours)
     full = [d for d in days if day_count[d] >= 0.9 * expected]
-    by_weekday: dict[int, list[str]] = {}
+    by_weekday: dict[int, list[str]] = defaultdict(list)
     flags: list[Json] = []
     for day in full:
-        weekday = date.fromisoformat(day).weekday()
-        prior = by_weekday.setdefault(weekday, [])
+        prior = by_weekday[date.fromisoformat(day).weekday()]
         samples = [day_total[d] for d in prior[-DAY_LOOKBACK:]]
-        if len(samples) >= DAY_MIN_SAMPLES:
-            typical = median(samples)
-            total = day_total[day]
-            if total >= DAY_MIN_RATIO * typical and total - typical >= DAY_MIN_EXCESS_KWH:
-                name = date.fromisoformat(day).strftime("%A")
-                flags.append(
-                    {
-                        "kind": "high_day",
-                        "date": day,
-                        "end_date": day,
-                        "ongoing": False,
-                        "kwh": round(total, 1),
-                        "typical_kwh": round(typical, 1),
-                        "headline": f"{_fmt_day(day)} used {total:.0f} kWh — {total / typical:.1f}× a typical {name}",
-                        "detail": f"recent {name}s ran ~{typical:.0f} kWh",
-                    }
-                )
         prior.append(day)
+        if len(samples) < DAY_MIN_SAMPLES:
+            continue
+        typical, total = median(samples), day_total[day]
+        if total < DAY_MIN_RATIO * typical or total - typical < DAY_MIN_EXCESS_KWH:
+            continue
+        name = date.fromisoformat(day).strftime("%A")
+        flags.append({
+            "kind": "high_day",
+            "date": day,
+            "end_date": day,
+            "ongoing": False,
+            "kwh": round(total, 1),
+            "typical_kwh": round(typical, 1),
+            "headline": f"{_fmt_day(day)} used {total:.0f} kWh — {total / typical:.1f}× a typical {name}",
+            "detail": f"recent {name}s ran ~{typical:.0f} kWh",
+        })
     return flags
