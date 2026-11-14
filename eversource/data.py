@@ -22,6 +22,7 @@ from .config import (
     NoExports,
 )
 from .devices import device_entry, fit_patterns, load_devices, overlap_entries
+from .flags import compute_flags
 from .progress import emit
 
 # Dedup keys per dataset: rows matching on these are the same observation, and
@@ -221,8 +222,18 @@ def build_payload() -> Json:
         # daily bucket "ends" at the next midnight, past the actual reads.
         last_read = frame["end"].max() or last_read
 
+    # Anomaly flags from the finest sub-daily kWh reads (device-free: both
+    # detectors compare the metered total against its own history).
+    flags: list[Json] = []
+    for name, hours in (("quarter_hour", 0.25), ("hourly", 1.0)):
+        frame = data.get(name)
+        if frame is not None and unit_of(frame) == "kWh":
+            flags = compute_flags(frame, hours)
+            break
+
     return {
         "intervals": intervals,
+        "flags": flags,
         "monthly": _records(data.get("monthly")),
         "bills": _records(bills),
         "last_read": last_read,

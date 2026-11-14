@@ -96,6 +96,50 @@ main {
   border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px;
 }
 
+/* Anomaly flags: a quiet badge in the topbar; the headlines live in a
+   dropdown and clicking one jumps the usage chart to the evidence. */
+.flags { position: relative; }
+.flags-btn {
+  font: inherit; font-size: 12px; cursor: pointer;
+  color: var(--series-4);
+  background: transparent;
+  border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px;
+}
+.flags-btn:hover { background: color-mix(in srgb, var(--series-4) 12%, transparent); }
+.flags-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  width: min(340px, calc(100vw - 32px));
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+  padding: 4px;
+  z-index: 40;
+}
+.flags-panel button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.flags-panel button:hover { background: color-mix(in srgb, var(--series-1) 9%, transparent); }
+.flags-panel button + button { border-top: 1px solid var(--gridline); border-radius: 0 0 7px 7px; }
+.flags-panel .flag-detail {
+  display: block;
+  margin-top: 1px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ------------------------------------------------------------ buttons --- */
 
 .btn {
