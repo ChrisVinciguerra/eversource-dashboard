@@ -445,8 +445,8 @@ function applyRange() {
   const chart = charts["usage-chart"];
   const interval = intervalFor(state.res);
   if (!chart || !interval || !interval.series.length) return;
-  const starts = interval.series[0].starts;
-  const endMs = new Date(starts[starts.length - 1]).getTime();
+  const endMs = Math.max(...interval.series.map(
+    (e) => new Date(e.starts[e.starts.length - 1]).getTime()));
   if (state.rangeDays === "all") {
     chart.dispatchAction({ type: "dataZoom", start: 0, end: 100 });
   } else {
