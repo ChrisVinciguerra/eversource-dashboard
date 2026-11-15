@@ -521,6 +521,7 @@ function renderOverview() {
 
   // Flag pins float above the day's total bar.
   const flagsByDay = overviewFlagsByDay();
+  const dayFacts = new Map(windowDays(win).map((d) => [d.day, d]));
   const dayTotals = new Map(windowDays(win).map((d) =>
     [d.day, metric === "cost" && d.hasCost ? d.cost : d.value]));
   const pins = days
@@ -551,8 +552,20 @@ function renderOverview() {
     const flag = flagsByDay.get(day);
     const note = flag
       ? `<div style="color:${t.series[3]};margin-top:3px">⚑ ${esc(flag.headline)}</div>` : "";
+    // The day's metered total, always with its cost alongside.
+    const d = dayFacts.get(day);
+    let total = "";
+    if (d) {
+      const usage = `${fmtNum(d.value)} ${daily.unit}`;
+      const both = !d.hasCost ? usage
+        : metric === "cost" ? `${fmtUsd(d.cost)} · ${usage}` : `${usage} · ${fmtUsd(d.cost)}`;
+      total = `<div style="margin-top:4px;padding-top:3px;border-top:1px solid ${t.gridline}">
+           <strong>${esc(both)}</strong>
+           <span style="opacity:.75">Total</span>
+         </div>`;
+    }
     return `<div style="color:${t.textSecondary}">${esc(fmtDay(day, DAY_FMT))}` +
-      ` · click to inspect</div>` + tooltipRows(params, valueFmt) + note;
+      ` · click to inspect</div>` + tooltipRows(params, valueFmt) + total + note;
   };
   chart.setOption(opt, REPLACE);
   chart.off("click");
