@@ -291,6 +291,9 @@ main {
   font-weight: 600;
   box-shadow: inset 0 0 0 1px var(--border);
 }
+.seg[hidden] { display: none; }
+/* Compact variant for card headers, matching the pager's height. */
+.seg-sm button { font-size: 12.5px; padding: 2px 9px; }
 /* Device chips: active means the device is broken out as its own series,
    inactive that it's folded into "Everything else". The dot carries the
    device's legend color. */
