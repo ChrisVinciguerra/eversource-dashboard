@@ -607,28 +607,27 @@ function niceBound(x) {
   return { bound: round(best.bound), step: round(best.step) };
 }
 
-// The day chart's y range, fixed across every day on record (for the current
-// resolution, measure, and breakdown) so paging between days compares heights
-// honestly instead of each day rescaling to its own peak.
-function detailYExtent(entries, metric, stacked) {
+// The day chart's y range, fixed across the billing cycle on screen (for the
+// current resolution, measure, and breakdown) so paging between its days
+// compares heights honestly instead of each day rescaling to its own peak.
+function detailYExtent(entries, metric, stacked, win) {
   let lo = 0, hi = 0;
   const see = (v) => { if (v < lo) lo = v; else if (v > hi) hi = v; };
-  if (stacked) {
-    const sums = new Map();
-    for (const entry of entries) {
-      const ys = metric === "cost" ? entry.costs : entry.values;
-      if (!ys) continue;
-      for (let i = 0; i < ys.length; i++)
-        if (ys[i] != null) sums.set(entry.starts[i], (sums.get(entry.starts[i]) ?? 0) + ys[i]);
-    }
-    for (const v of sums.values()) see(v);
-  } else {
-    for (const entry of entries) {
-      const ys = metric === "cost" ? entry.costs : entry.values;
-      if (!ys) continue;
-      for (let i = 0; i < ys.length; i++) if (ys[i] != null) see(ys[i]);
+  const inWin = (start) => {
+    const day = start.slice(0, 10);
+    return !win || (day >= win.start && day <= win.end);
+  };
+  const sums = new Map();
+  for (const entry of entries) {
+    const ys = metric === "cost" ? entry.costs : entry.values;
+    if (!ys) continue;
+    for (let i = 0; i < ys.length; i++) {
+      if (ys[i] == null || !inWin(entry.starts[i])) continue;
+      if (stacked) sums.set(entry.starts[i], (sums.get(entry.starts[i]) ?? 0) + ys[i]);
+      else see(ys[i]);
     }
   }
+  for (const v of sums.values()) see(v);
   // Slightly negative buckets are breakdown noise (device estimates
   // overshooting the meter), not worth a negative axis; real export is.
   const top = niceBound(hi);
@@ -714,7 +713,11 @@ function renderDetail() {
   opt.xAxis.min = dayMs(day);
   opt.xAxis.max = dayMs(day) + 86400e3;
   metricYAxis(opt, interval.unit);
-  const extent = detailYExtent(entries, metric, stacked);
+  // The selected day normally sits inside the overview's window; if not,
+  // fall back to the whole record.
+  const win = currentWin();
+  const extent = detailYExtent(entries, metric, stacked,
+    win && day >= win.start && day <= win.end ? win : null);
   if (extent.max > extent.min) {
     opt.yAxis.min = extent.min;
     opt.yAxis.max = extent.max;
