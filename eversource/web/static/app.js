@@ -1296,10 +1296,7 @@ async function pollJob() {
         } else {
           setBanner({});
           if (job.kind === "login") startUpdate();
-          else {
-            localStorage.setItem("checkedAt", String(Date.now()));
-            await loadData();
-          }
+          else await loadData();
         }
         return;
       }
@@ -1316,11 +1313,11 @@ async function pollJob() {
     polling = false;
     $("update-btn").disabled = false;
     document.querySelectorAll(".chart").forEach((el) => el.classList.remove("loading"));
+    checkFreshness();
   }
 }
 
 async function startUpdate() {
-  localStorage.setItem("lastUpdate", String(Date.now()));
   await fetch("/api/update", { method: "POST" });
   pollJob();
 }
@@ -1371,17 +1368,32 @@ $("mfa-form").addEventListener("submit", async (event) => {
 });
 
 // Reads post in ~4-hour blocks, so data over 4 hours old *might* have more
-// behind it: pull (cheap, often empty), at most once per RECHECK_MS. A
-// successful pull — even an empty one — clears the badge for that long.
+// behind it: pull (cheap, often empty). The server decides when a pull is due
+// (30 min after a success, sooner after a failure), so every tab agrees and a
+// reload retries. The badge means "old, and the last pull failed" — while a
+// pull runs the banner shows it, and after a clean one there is nothing newer.
 const STALE_MS = 4 * 3600e3;
-const RECHECK_MS = 30 * 60e3;
 
-function checkFreshness() {
+async function checkFreshness() {
   const last = state.data?.last_read;
   const stale = !last || Date.now() - new Date(last).getTime() > STALE_MS;
-  const since = (key) => Date.now() - Number(localStorage.getItem(key) || 0);
-  $("stale-badge").hidden = !stale || since("checkedAt") < RECHECK_MS;
-  if (stale && !polling && since("lastUpdate") >= RECHECK_MS) startUpdate();
+  let job;
+  try {
+    job = await getJson("/api/job");
+  } catch {
+    $("stale-badge").hidden = !stale || polling; // server unreachable
+    return;
+  }
+  if (polling) {
+    $("stale-badge").hidden = true;
+    return;
+  }
+  if (job.running) {
+    pollJob();
+    return;
+  }
+  $("stale-badge").hidden = !(stale && job.failing);
+  if (stale && job.check_due) startUpdate().catch(() => {});
 }
 
 // Re-pull device specs that name a remote source (the server may be asleep,
@@ -1399,9 +1411,12 @@ async function refreshDevices() {
 async function init() {
   await loadData();
   refreshDevices();
+  // loadData() already ran the freshness check (and started a pull if one was
+  // due); here only re-surface a failure left by an earlier pull.
   const job = await getJson("/api/job");
-  if (job.running) pollJob();
-  else checkFreshness();
+  if (!job.running && job.error && !polling) {
+    setBanner({ text: job.error, error: true, login: job.needs_login || job.kind === "login" });
+  }
   setInterval(checkFreshness, 60e3);
 }
 
