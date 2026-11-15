@@ -4,13 +4,13 @@
 # on CT 101 reads it as /data/power/devices/macbook.json.
 #
 # Usage: scripts/install_mac_power_push.sh [dest]
-#   dest — scp target (default: Desktop-Host:/mnt/data/power/devices/macbook.json)
+#   dest — scp target (default: pve:/mnt/data/power/devices/macbook.json)
 set -eu
 
 LABEL="com.energy-dashboard.mac-power-push"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 STATE="$HOME/.local/share/energy-dashboard/mac-power"
-DEST="${1:-Desktop-Host:/mnt/data/power/devices/macbook.json}"
+DEST="${1:-pve:/mnt/data/power/devices/macbook.json}"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 
