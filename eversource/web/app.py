@@ -11,7 +11,9 @@ blocks on an Event while the page POSTs the verification code to /api/mfa.
 
 from __future__ import annotations
 
+import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +25,15 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import progress
 from ..auth import credentials, login
-from ..config import CliError, Json, NoExports, SessionExpired, load_config
+from ..config import (
+    EXPORT_GLOB,
+    EXPORT_ROOT,
+    CliError,
+    Json,
+    NoExports,
+    SessionExpired,
+    load_config,
+)
 from ..data import cached_payload
 from ..devices import refresh_device_sources
 from ..fetch import run_export, run_update
@@ -33,6 +43,15 @@ MFA_WAIT_SECONDS = 300
 
 # With no exports at all, the first update bootstraps this much history.
 FIRST_EXPORT_DAYS = 365
+
+# Reads post in blocks hours apart, so after a successful pull (even an empty
+# one) the page waits this long before pulling again on its own.
+RECHECK_SECONDS = 30 * 60
+
+# After a failed job the automatic pull retries sooner, doubling from this up
+# to RECHECK_SECONDS so a persistent failure (bad password, Eversource down)
+# is not hammered.
+RETRY_SECONDS = 2 * 60
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -91,6 +110,45 @@ _job_lock = threading.Lock()
 _job: Job | None = None
 
 
+def _newest_export_time() -> float | None:
+    times = [p.stat().st_mtime for p in EXPORT_ROOT.glob(EXPORT_GLOB) if p.is_dir()]
+    return max(times, default=None)
+
+
+# When to pull next is decided here, not in the browser, so every tab and
+# device agrees and a reload can't be blocked by a stamp left in one browser.
+# Seeded from the newest export so a restart doesn't count as "never checked".
+_last_ok: float | None = _newest_export_time()
+_last_fail: float | None = None
+_fails = 0  # consecutive failed jobs
+
+
+def _record_result(job: Job) -> None:
+    global _last_ok, _last_fail, _fails
+    if job.error is not None:
+        _fails += 1
+        _last_fail = time.time()
+        # Job errors otherwise live only in memory; keep a trace in the journal.
+        print(f"{job.kind} failed: {job.error}", file=sys.stderr, flush=True)
+        return
+    _fails = 0
+    if job.kind == "update":
+        _last_ok = time.time()
+
+
+def _freshness() -> Json:
+    """Whether the last attempt failed, and whether an automatic pull is due."""
+    now = time.time()
+    if _job is not None and _job.running:
+        due = False
+    elif _fails and _last_fail is not None:
+        wait = min(RECHECK_SECONDS, RETRY_SECONDS * 2 ** (_fails - 1))
+        due = now - _last_fail >= wait
+    else:
+        due = _last_ok is None or now - _last_ok >= RECHECK_SECONDS
+    return {"failing": _fails > 0, "check_due": due}
+
+
 def _run_job(job: Job, target) -> None:
     token = progress.set_sink(job.log.append)
     try:
@@ -105,6 +163,7 @@ def _run_job(job: Job, target) -> None:
     finally:
         progress.reset_sink(token)
         job.mfa_prompt = None
+        _record_result(job)
         job.running = False
 
 
@@ -196,7 +255,12 @@ def api_mfa(body: MfaCode) -> JSONResponse:
 
 @app.get("/api/job")
 def api_job() -> Json:
-    return _job.state() if _job is not None else {"kind": None, "status": "idle", "running": False}
+    state = (
+        _job.state()
+        if _job is not None
+        else {"kind": None, "status": "idle", "running": False}
+    )
+    return {**state, **_freshness()}
 
 
 @app.middleware("http")
