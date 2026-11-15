@@ -1,7 +1,7 @@
 /* Eversource energy dashboard — "two altitudes" layout.
    The billing cycle and a single day are both always on screen: the overview
    chart (one bar per day) is the navigation, clicking a day puts it under the
-   15-minute microscope below. A side rail carries the cycle pace, the device
+   15-minute (or hourly) microscope below. A side rail carries the cycle pace, the device
    breakdown, and anomaly flags; one generated sentence narrates the month.
    Data comes from /api/data; long operations (update, sign-in) run as
    server-side jobs polled via /api/job. */
@@ -22,6 +22,8 @@ const state = {
   folded: new Set(JSON.parse(localStorage.getItem("folded") || "[]")),
   cycleIdx: 0,        // 0 = newest window (the running cycle)
   selectedDay: null,  // "YYYY-MM-DD" under the microscope
+  // Preferred resolution of the day chart; falls back to whatever exists.
+  detailRes: localStorage.getItem("detailRes") || "quarter_hour",
 };
 
 const charts = {};        // id -> echarts instance
@@ -176,8 +178,11 @@ function intervalFor(res) {
   return state.data && state.data.intervals ? state.data.intervals[res] : null;
 }
 
-// The finest sub-daily dataset, for the day-under-the-microscope chart.
-const detailRes = () => ["quarter_hour", "hourly"].find((r) => intervalFor(r)) || null;
+// The sub-daily dataset for the day-under-the-microscope chart: the picked
+// resolution when it exists, else the finest available.
+const DETAIL_RESES = ["quarter_hour", "hourly"];
+const detailRes = () =>
+  [state.detailRes, ...DETAIL_RESES].find((r) => DETAIL_RESES.includes(r) && intervalFor(r)) || null;
 
 // Known-device names in a stable order, shared by the chart's component
 // series and the filter chips so both map a device to the same palette slot:
@@ -584,8 +589,58 @@ function sliceDay(entry, day) {
   return costs ? { ...entry, starts, values, costs } : { ...entry, starts, values };
 }
 
+// A "nice" axis bound at or beyond x, as { bound, step }: the tightest bound
+// that is three to six 1/2/2.5/5 × 10^k steps from zero.
+function niceBound(x) {
+  if (!(x > 0)) return { bound: 0, step: 0 };
+  const exp = Math.floor(Math.log10(x));
+  let best = null;
+  for (const pow of [10 ** (exp - 1), 10 ** exp]) {
+    for (const m of [1, 2, 2.5, 5]) {
+      const step = m * pow;
+      const n = Math.ceil(x / step - 1e-9);
+      if (n < 3 || n > 6) continue;
+      if (!best || n * step < best.bound - 1e-12) best = { bound: n * step, step };
+    }
+  }
+  const round = (v) => Math.round(v * 1e9) / 1e9;
+  return { bound: round(best.bound), step: round(best.step) };
+}
+
+// The day chart's y range, fixed across every day on record (for the current
+// resolution, measure, and breakdown) so paging between days compares heights
+// honestly instead of each day rescaling to its own peak.
+function detailYExtent(entries, metric, stacked) {
+  let lo = 0, hi = 0;
+  const see = (v) => { if (v < lo) lo = v; else if (v > hi) hi = v; };
+  if (stacked) {
+    const sums = new Map();
+    for (const entry of entries) {
+      const ys = metric === "cost" ? entry.costs : entry.values;
+      if (!ys) continue;
+      for (let i = 0; i < ys.length; i++)
+        if (ys[i] != null) sums.set(entry.starts[i], (sums.get(entry.starts[i]) ?? 0) + ys[i]);
+    }
+    for (const v of sums.values()) see(v);
+  } else {
+    for (const entry of entries) {
+      const ys = metric === "cost" ? entry.costs : entry.values;
+      if (!ys) continue;
+      for (let i = 0; i < ys.length; i++) if (ys[i] != null) see(ys[i]);
+    }
+  }
+  // Slightly negative buckets are breakdown noise (device estimates
+  // overshooting the meter), not worth a negative axis; real export is.
+  const top = niceBound(hi);
+  const min = lo < -0.1 * hi ? -Math.ceil(-lo / top.step) * top.step : 0;
+  return { min, max: top.bound, interval: top.step };
+}
+
 function renderDetail() {
   const res = detailRes();
+  const resSeg = $("res-seg");
+  resSeg.hidden = DETAIL_RESES.some((r) => !intervalFor(r));
+  syncSeg("res-seg", "res", res);
   $("detail-card").hidden = !res;
   if (!res) return;
   const t = tokens();
@@ -659,6 +714,12 @@ function renderDetail() {
   opt.xAxis.min = dayMs(day);
   opt.xAxis.max = dayMs(day) + 86400e3;
   metricYAxis(opt, interval.unit);
+  const extent = detailYExtent(entries, metric, stacked);
+  if (extent.max > extent.min) {
+    opt.yAxis.min = extent.min;
+    opt.yAxis.max = extent.max;
+    opt.yAxis.interval = extent.interval;
+  }
   opt.series = series;
   opt.legend = legendFor(series, t);
   opt.tooltip.formatter = (params) => {
@@ -804,8 +865,8 @@ function renderDevicesCard() {
   ).join("");
 }
 
-// Flags: one compact line each — date + short label left, the bold multiplier
-// or wattage right; clicking puts the flagged day under the microscope. Long
+// Flags: the date left and the measured reading right, with the comparison
+// underneath; clicking puts the flagged day under the microscope. Long
 // lists collapse to the newest five behind a "Show all" button.
 const MAX_VISIBLE_FLAGS = 5;
 let flagsExpanded = false;
@@ -829,18 +890,26 @@ function renderFlagsCard() {
     const endFmt = span && flag.end_date.slice(0, 7) === flag.date.slice(0, 7)
       ? { day: "numeric" } : undefined;
     const when = span ? `${fmtDay(flag.date)}–${fmtDay(flag.end_date, endFmt)}` : fmtDay(flag.date);
-    const value = overnight
-      ? `${fmtNum(flag.watts, 0)} W`
-      : flag.typical_kwh
-        ? `${(flag.kwh / flag.typical_kwh).toFixed(1)}×`
-        : `${fmtNum(flag.kwh, 0)} kWh`;
-    // The overnight kind keeps its detail sentence: the wattage alone doesn't
-    // say what "typical" was.
+    // Title: when (with the weekday for a single day); right: what the meter
+    // read; second line: what that's being compared against.
+    const title = span ? when : fmtDay(flag.date, { weekday: "short", month: "short", day: "numeric" });
+    let value, detail;
+    if (overnight) {
+      value = `${fmtNum(flag.watts, 0)} W`;
+      detail = "overnight floor" +
+        (flag.typical_watts ? ` · typically ~${fmtNum(Math.round(flag.typical_watts / 10) * 10, 0)} W` : "");
+    } else {
+      value = `${fmtNum(flag.kwh, 1)} kWh`;
+      detail = flag.typical_kwh
+        ? `${(flag.kwh / flag.typical_kwh).toFixed(1)}× a typical ` +
+          fmtDay(flag.date, { weekday: "long" })
+        : "";
+    }
     btn.innerHTML =
       `<span class="flag-line"><span class="flag-icon${overnight ? " overnight" : ""}">${overnight ? "●" : "⚑"}</span>` +
-      `<span class="flag-head">${esc(`${when} · ${overnight ? "overnight load" : "high day"}`)}</span>` +
+      `<span class="flag-head">${esc(title)}</span>` +
       `<span class="flag-value">${esc(value)}</span></span>` +
-      (overnight && flag.detail ? `<span class="flag-detail">${esc(flag.detail)}</span>` : "");
+      (detail ? `<span class="flag-detail">${esc(detail)}</span>` : "");
     btn.addEventListener("click", () => {
       selectDay(flag.date);
       $("detail-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -1100,6 +1169,13 @@ wireSeg("view-seg", "view", (value) => {
   syncChipState();
   renderOverview();
   renderDetail();
+});
+
+wireSeg("res-seg", "res", (value) => {
+  localStorage.setItem("detailRes", value);
+  state.detailRes = value;
+  renderDetail();
+  if (!$("detail-table").hidden) fillTable("detail");
 });
 
 syncSeg("metric-seg", "metric", state.metric);
