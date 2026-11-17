@@ -364,6 +364,28 @@ function currentWin() {
 const windowDays = (win) =>
   dailyTotals().filter((d) => d.day >= win.start && d.day <= win.end);
 
+// How much of `day` the meter data actually covers, as a 0..1 fraction: the
+// end of the last sub-daily read on it. Data usually stops partway through
+// the newest day, and pacing that as a full day drags the projection down.
+// 1 when no sub-daily data reaches the day (nothing to judge it by).
+function dayCoverage(day) {
+  let frac = 0;
+  for (const [res, hours] of [["quarter_hour", 0.25], ["hourly", 1]]) {
+    for (const entry of intervalFor(res)?.series || []) {
+      for (let i = entry.starts.length - 1; i >= 0; i--) {
+        const start = entry.starts[i];
+        if (entry.values[i] == null) continue;
+        if (start.slice(0, 10) === day) {
+          const end = +start.slice(11, 13) + +start.slice(14, 16) / 60 + hours;
+          frac = Math.max(frac, Math.min(1, end / 24));
+        }
+        break; // only the newest read matters
+      }
+    }
+  }
+  return frac || 1;
+}
+
 // Pace facts for the running cycle: how far in, the projection, and the
 // comparison against the last billed cycle.
 function cycleFacts() {
@@ -378,7 +400,10 @@ function cycleFacts() {
   const elapsed = daysBetween(win.start, days[days.length - 1].day) + 1;
   const usage = days.reduce((s, d) => s + d.value, 0);
   const cost = days.some((d) => d.hasCost) ? days.reduce((s, d) => s + d.cost, 0) : null;
-  const projUsage = elapsed > 0 ? (usage / elapsed) * cycleLen : null;
+  // Pace over the time the data really spans: the newest day counts only as
+  // far as its reads go, not as a whole day.
+  const paced = elapsed - 1 + dayCoverage(days[days.length - 1].day);
+  const projUsage = paced > 0 ? (usage / paced) * cycleLen : null;
   const rate = lastBill ? lastBill.total_amount_usd / lastBill.usage : null;
   return {
     win, elapsed, cycleLen,
