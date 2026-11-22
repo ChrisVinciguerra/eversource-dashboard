@@ -430,7 +430,6 @@ def login(
     username: str | None = None,
     password: str | None = None,
     mfa_prompt: MfaPrompt | None = None,
-    save_password: bool = True,
 ) -> requests.Session:
     """Sign in and persist the session. Returns the live requests session.
 
@@ -463,11 +462,10 @@ def login(
     cfg["username"] = username
     cfg["cookies"] = eversource_cookies(session)
     # A new session invalidates anything cached under the old one.
-    for stale in ("accounts", "jwt", "opower_meta", "cookie"):
+    for stale in ("accounts", "jwt", "opower_meta"):
         cfg.pop(stale, None)
     save_config(cfg)
-    if save_password:
-        keychain_set(username, password)
+    keychain_set(username, password)
     emit("Signed in.")
     return session
 

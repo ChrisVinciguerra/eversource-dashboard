@@ -247,20 +247,16 @@ _cache: tuple[tuple[tuple[str, float, int], ...], Json] | None = None
 
 def _signature() -> tuple[tuple[str, float, int], ...]:
     files = [
-        path
-        for folder in EXPORT_ROOT.glob(EXPORT_GLOB)
-        if folder.is_dir()
-        for path in folder.glob("*.csv")
+        *EXPORT_ROOT.glob(f"{EXPORT_GLOB}/*.csv"),
+        *DEVICE_ROOT.glob("*.json"),
     ]
-    if DEVICE_ROOT.is_dir():
-        files.extend(DEVICE_ROOT.glob("*.json"))
     return tuple(
         sorted((str(path), path.stat().st_mtime, path.stat().st_size) for path in files)
     )
 
 
 def cached_payload() -> Json:
-    """Return build_payload(), re-merging only when the CSVs change."""
+    """Return build_payload(), re-merging only when its input files change."""
     global _cache
     signature = _signature()
     if _cache is None or _cache[0] != signature:

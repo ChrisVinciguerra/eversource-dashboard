@@ -21,10 +21,10 @@ it (see fit_patterns), so a cycling appliance is subtracted at the moments it
 actually ran; elsewhere the pattern is aligned to local midnight.
 
 A file may instead carry only {"source": ...} — a local path, an ssh
-"host:path", or an http(s) URL serving the document above. refresh_device_sources() re-pulls each
-source (the page triggers it on open) and writes the fetched document back
-into the file, so it doubles as a cache: an unreachable source keeps serving
-the last successful fetch.
+"host:path", or an http(s) URL serving the document above.
+refresh_device_sources() re-pulls each source (the page triggers it on open)
+and writes the fetched document back into the file, so it doubles as a cache:
+an unreachable source keeps serving the last successful fetch.
 """
 
 from __future__ import annotations
@@ -82,8 +82,6 @@ def parse_spec(spec: Json) -> Json:
 
 def load_devices() -> list[Json]:
     """Return the parsed device specs from devices/*.json."""
-    if not DEVICE_ROOT.is_dir():
-        return []
     devices: list[Json] = []
     for path in sorted(DEVICE_ROOT.glob("*.json")):
         try:
@@ -123,8 +121,6 @@ def refresh_device_sources() -> bool:
     changed file is picked up on the next build.
     """
     changed = False
-    if not DEVICE_ROOT.is_dir():
-        return changed
     for path in sorted(DEVICE_ROOT.glob("*.json")):
         try:
             spec = json.loads(path.read_text())

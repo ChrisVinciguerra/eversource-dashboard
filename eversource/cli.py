@@ -7,8 +7,8 @@ Commands:
   export      write quarter_hour/hourly/daily/monthly/bills CSVs into a
               timestamped folder under exports/
   update      export from the most recent exported data through today
-  serve       run the local dashboard (merges every export folder, updates on
-              demand, redesigned web UI)
+  serve       run the dashboard web app (merges every export folder, updates
+              on demand)
 """
 
 from __future__ import annotations

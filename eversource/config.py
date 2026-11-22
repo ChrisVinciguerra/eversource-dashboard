@@ -2,7 +2,8 @@
 
 Config (session cookies, Okta tokens, cached JWT, account metadata, Opower
 uuids) lives in ~/.config/eversource-cli/config.json (mode 0600). The account
-password is never stored there — it goes in the system keychain, see auth.py.
+password is never stored there — it goes in the system keychain (off macOS, a
+0600 file beside the config), see auth.py.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ LOGIN_URL = f"{ES}/security/account/login"
 MSLOGIN_URL = f"{ES}/security/account/MSLogin"
 MFALOGIN_URL = f"{ES}/security/account/MFALogin"
 MSLOGIN_RETURN_URL = "/cg/customer/accountoverview"
-ACCOUNT_URL = f"{ES}/cg/customer/Account"
 OPOWER_GQL = "https://ever.opower.com/ei/edge/apis/dsm-graphql-v1/cws/graphql"
 
 # Okta (Classic Engine) org backing the Eversource sign-in page. The site's SPA
@@ -55,11 +55,11 @@ RELOGIN_HINT = "Run: eversource.py login"
 EXPORT_FIRST_HINT = "run `eversource.py export` first"
 
 Json = dict[str, Any]
-Cookie = dict[str, Any]
 
-# Config keys: "username" (str), "cookies" (list[Cookie]), "okta" (OktaTokens),
-# "okta_dt" (str: device-trust cookie that suppresses MFA), "accounts" (Json),
-# "jwt" (dict[str, JwtCache]), "opower_meta" (dict[str, Json]).
+# Config keys: "username" (str), "cookies" (list of cookie dicts), "okta"
+# (OktaTokens), "okta_dt" (str: device-trust cookie that suppresses MFA),
+# "accounts" (Json), "jwt" ({account: {"token", "exp"}}), "opower_meta"
+# ({account: Json}).
 Config = dict[str, Any]
 
 
