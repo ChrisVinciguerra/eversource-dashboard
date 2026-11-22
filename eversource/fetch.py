@@ -145,7 +145,7 @@ def fetch_bills(
         "WDB_GetCostUsageReadsForBills",
         BILLS_QUERY,
         {
-            "selectedAccount": meta.selected_account,
+            "selectedAccount": meta["selectedAccount"],
             "last": months + 1,
             "timeInterval": f"{start.isoformat()}/{end.isoformat()}",
             "forceLegacyData": False,
@@ -186,7 +186,7 @@ def fetch_quarter_hour(
     # the meter and stream they came from; pandas does the rest.
     reads: list[Json] = []
     chunk = timedelta(days=CHUNK_DAYS)
-    for meter in meta.meters:
+    for meter in meta["meters"]:
         current = start
         while current <= end:
             chunk_end = min(current + chunk, end + timedelta(days=1))
@@ -196,11 +196,11 @@ def fetch_quarter_hour(
                 "WDB_GetUsageReadsForDayAndHourWithIntervalReads",
                 READS_QUERY,
                 {
-                    "selectedAccount": meta.selected_account,
+                    "selectedAccount": meta["selectedAccount"],
                     "timeInterval": f"{iso(current)}/{iso(chunk_end)}",
                     "resolution": "QUARTER_HOUR",
-                    "saUuid": meter.sa_uuid,
-                    "spUuid": meter.sp_uuid,
+                    "saUuid": meter["saUuid"],
+                    "spUuid": meter["spUuid"],
                     "forceLegacyData": False,
                     "aliased": True,
                 },
@@ -215,7 +215,7 @@ def fetch_quarter_hour(
                         for stream in streams.get(name) or []:
                             reads.extend(
                                 {
-                                    "meter": meter.utility_id,
+                                    "meter": meter["utilityId"],
                                     "stream": name,
                                     "stream_unit": stream.get("unit"),
                                     **read,

@@ -20,9 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import time
-from dataclasses import dataclass
-from types import TracebackType
-from typing import Any, Self, TypedDict
+from typing import Any, Self
 
 import requests
 
@@ -46,61 +44,6 @@ from .config import (
     save_config,
 )
 from .progress import emit
-
-
-class JwtCache(TypedDict):
-    """Cached Opower JWT and its expiry (epoch seconds)."""
-
-    token: str
-    exp: int
-
-
-@dataclass(frozen=True, slots=True)
-class Meter:
-    """One service-point meter on a billing account."""
-
-    sa_uuid: str
-    sp_uuid: str
-    service_type: str
-    utility_id: str
-
-    @classmethod
-    def from_json(cls, raw: Json) -> Self:
-        return cls(
-            sa_uuid=raw["saUuid"],
-            sp_uuid=raw["spUuid"],
-            service_type=raw["serviceType"],
-            utility_id=raw["utilityId"],
-        )
-
-    def to_json(self) -> Json:
-        return {
-            "saUuid": self.sa_uuid,
-            "spUuid": self.sp_uuid,
-            "serviceType": self.service_type,
-            "utilityId": self.utility_id,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class AccountMetadata:
-    """Opower account urn plus the meters it bills for."""
-
-    selected_account: str
-    meters: list[Meter]
-
-    @classmethod
-    def from_json(cls, raw: Json) -> Self:
-        return cls(
-            selected_account=raw["selectedAccount"],
-            meters=[Meter.from_json(meter) for meter in raw["meters"]],
-        )
-
-    def to_json(self) -> Json:
-        return {
-            "selectedAccount": self.selected_account,
-            "meters": [meter.to_json() for meter in self.meters],
-        }
 
 
 # ---------------------------------------------------------------- GraphQL ---
@@ -219,15 +162,7 @@ class Client:
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        self.close()
-
-    def close(self) -> None:
+    def __exit__(self, *exc_info: object) -> None:
         if self._session is not None:
             self._session.close()
             self._session = None
@@ -322,7 +257,7 @@ class Client:
 
     def jwt(self, billing_account: str) -> str:
         """Return an unexpired Opower bearer token, minting one if needed."""
-        cached: JwtCache | None = self.cfg.get("jwt", {}).get(str(billing_account))
+        cached = self.cfg.get("jwt", {}).get(str(billing_account))
         if cached and cached["exp"] - 60 > time.time():
             return cached["token"]
         path = f"/cg/customer/api/accountbilling/getOpowerWidgetData/{billing_account}"
@@ -341,9 +276,10 @@ class Client:
         payload = json.loads(
             base64.urlsafe_b64decode(token.split(".")[1] + "==").decode()
         )
-        self.cfg.setdefault("jwt", {})[str(billing_account)] = JwtCache(
-            token=token, exp=payload["exp"]
-        )
+        self.cfg.setdefault("jwt", {})[str(billing_account)] = {
+            "token": token,
+            "exp": payload["exp"],
+        }
         save_config(self.cfg)
         return token
 
@@ -379,12 +315,16 @@ class Client:
             )
         return body["data"]
 
-    def metadata(self, billing_account: str) -> AccountMetadata:
-        """Return the Opower urn and service agreement/point uuids (cached)."""
+    def metadata(self, billing_account: str) -> Json:
+        """Return the Opower urn and service agreement/point uuids (cached).
+
+        Shape: {"selectedAccount": urn, "meters": [{"saUuid", "spUuid",
+        "serviceType", "utilityId"}]}, one meter per service point.
+        """
         key = str(billing_account)
         cached = self.cfg.get("opower_meta", {}).get(key)
         if cached is not None:
-            return AccountMetadata.from_json(cached)
+            return cached
         data = self.gql(
             billing_account,
             "WDB_GetMetadata",
@@ -392,19 +332,19 @@ class Client:
             {"forceLegacyData": False, "aliased": True},
         )
         account = data["billingAccountByAuthContext"]
-        meta = AccountMetadata(
-            selected_account=account["urn"],
-            meters=[
-                Meter(
-                    sa_uuid=agreement["node"]["uuid"],
-                    sp_uuid=point["node"]["uuid"],
-                    service_type=agreement["node"]["serviceType"],
-                    utility_id=point["node"]["utilityId"],
-                )
+        meta = {
+            "selectedAccount": account["urn"],
+            "meters": [
+                {
+                    "saUuid": agreement["node"]["uuid"],
+                    "spUuid": point["node"]["uuid"],
+                    "serviceType": agreement["node"]["serviceType"],
+                    "utilityId": point["node"]["utilityId"],
+                }
                 for agreement in account["serviceAgreementsConnection"]["edges"]
                 for point in agreement["node"]["servicePointsConnection"]["edges"]
             ],
-        )
-        self.cfg.setdefault("opower_meta", {})[key] = meta.to_json()
+        }
+        self.cfg.setdefault("opower_meta", {})[key] = meta
         save_config(self.cfg)
         return meta
