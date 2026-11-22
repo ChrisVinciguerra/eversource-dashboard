@@ -1,16 +1,16 @@
 #!/bin/sh
 # Install (or reinstall) the launchd agent that pushes this Mac's power
-# device document to the home server every 15 minutes, where the dashboard
-# there reads it through a devices/ source.
+# device document to the server every 15 minutes, where the dashboard reads
+# it through a devices/ source.
 #
-# Usage: scripts/install_mac_power_push.sh [dest]
-#   dest — scp target (default: user@server:/path/devices/macbook.json)
+# Usage: scripts/install_mac_power_push.sh dest
+#   dest — scp target, e.g. user@server:/path/devices/macbook.json
 set -eu
 
 LABEL="com.energy-dashboard.mac-power-push"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 STATE="$HOME/.local/share/energy-dashboard/mac-power"
-DEST="${1:-user@server:/path/devices/macbook.json}"
+DEST="${1:?usage: $0 user@server:/path/devices/macbook.json}"
 
 mkdir -p "$HOME/Library/LaunchAgents"
 

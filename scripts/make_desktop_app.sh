@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Create (or refresh) ~/Desktop/Energy.app — a double-clickable launcher for
-# the dashboard, hosted on a home server. Pass a URL to
-# override; use --local for the old behavior of serving from this repo.
+# the dashboard. Pass the URL it is served at (default: this machine); use
+# --local to have the app start a server from this repo itself.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
