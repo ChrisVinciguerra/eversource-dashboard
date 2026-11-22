@@ -33,6 +33,7 @@ from typing import TypedDict
 import requests
 
 from .config import (
+    CONFIG_DIR,
     ES,
     KEYCHAIN_SERVICE,
     LOGIN_URL,
@@ -69,6 +70,9 @@ API_HEADERS = {
 # Ask for the code this far before the access token actually lapses.
 EXPIRY_SKEW = 120
 
+# Where the password is kept when there is no keychain (no `security` command).
+PASSWORD_PATH = CONFIG_DIR / "password"
+
 MfaPrompt = Callable[[str], str]
 
 
@@ -87,7 +91,7 @@ def keychain_get(username: str) -> str | None:
     """Return the stored password for `username`, or None if there isn't one.
 
     Off macOS (no `security` command) a plain file next to config.json is the
-    fallback: ~/.config/eversource-cli/password, mode 0600.
+    fallback: PASSWORD_PATH, mode 0600.
     """
     try:
         done = subprocess.run(
@@ -96,20 +100,15 @@ def keychain_get(username: str) -> str | None:
             capture_output=True, text=True, check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return _password_file_get()
+        try:
+            return PASSWORD_PATH.read_text().strip() or None
+        except OSError:
+            return None
     return done.stdout.rstrip("\n") or None
 
 
-def _password_file_get() -> str | None:
-    try:
-        from .config import CONFIG_DIR
-        return (CONFIG_DIR / "password").read_text().strip() or None
-    except OSError:
-        return None
-
-
 def keychain_set(username: str, password: str) -> None:
-    """Store (or replace) the password for `username` in the keychain."""
+    """Store (or replace) the password for `username` (see keychain_get)."""
     try:
         subprocess.run(
             ["security", "add-generic-password", "-U",
@@ -117,16 +116,23 @@ def keychain_set(username: str, password: str) -> None:
             capture_output=True, text=True, check=True,
         )
     except FileNotFoundError:
-        emit("no `security` command — password not saved; logins will prompt.")
+        PASSWORD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PASSWORD_PATH.touch(mode=0o600)
+        PASSWORD_PATH.chmod(0o600)
+        PASSWORD_PATH.write_text(password)
     except subprocess.CalledProcessError as error:
         emit(f"could not save the password to the keychain: {error.stderr.strip()}")
 
 
 def keychain_delete(username: str) -> None:
     """Remove the stored password, ignoring the case where there isn't one."""
+    PASSWORD_PATH.unlink(missing_ok=True)
     with_args = ["security", "delete-generic-password",
                  "-s", KEYCHAIN_SERVICE, "-a", username]
-    subprocess.run(with_args, capture_output=True, text=True, check=False)
+    try:
+        subprocess.run(with_args, capture_output=True, text=True, check=False)
+    except FileNotFoundError:  # off macOS there is no keychain to clear
+        pass
 
 
 def credentials(cfg: Config) -> tuple[str, str] | None:
