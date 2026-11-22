@@ -1,7 +1,7 @@
 # eversource-dashboard
 
 Pull your Eversource energy usage data, export it to CSV, and explore it in a
-local web dashboard. Reverse-engineered from a browser capture of the
+web dashboard served from your own machine. Reverse-engineered from a browser capture of the
 usage-detail page.
 
 > **Unofficial.** This project is not affiliated with or endorsed by Eversource
@@ -42,7 +42,9 @@ scratch. Either way it happens mid-request, so expiry is invisible — the
 Config (session cookies, Okta tokens, the device-trust cookie, cached JWT,
 account metadata, Opower service agreement/service point uuids) lives in
 `~/.config/eversource-cli/config.json` (mode 0600). The password is **not** kept
-there — it goes in the macOS keychain under the service `eversource-cli`.
+there — it goes in the macOS keychain under the service `eversource-cli`, or,
+where there is no keychain (a Linux server), in
+`~/.config/eversource-cli/password` (mode 0600).
 
 ## Layout
 
@@ -54,8 +56,11 @@ there — it goes in the macOS keychain under the service `eversource-cli`.
   - `fetch.py` — fetching reads/bills and writing export folders
   - `data.py` — merging export folders and shaping the dashboard payload
   - `devices.py` — known-device streams: loading, remote sources, expansion
+  - `flags.py` — anomaly flags computed from the meter reads
+  - `progress.py` — progress messages, to stderr or into a web job's log
   - `cli.py` — the command-line interface
   - `web/` — FastAPI app (`app.py`) and the static dashboard page (`static/`)
+- `scripts/` — the Mac power recorder and its installers, the desktop launcher
 
 ## Setup
 
@@ -72,7 +77,7 @@ uv run eversource.py login            # or: login <email-or-username>
 ```
 
 It asks for your password, and for a verification code if Okta wants one. The
-password is saved to the keychain and the device is remembered, so this is a
+password is saved (see above) and the device is remembered, so this is a
 one-time step: from then on the session renews itself silently and you should
 never be asked again. `uv run eversource.py logout` undoes it.
 
@@ -82,26 +87,26 @@ never be asked again. `uv run eversource.py logout` undoes it.
 uv run eversource.py          # `serve` is the default command
 ```
 
-Starts a local web app (default `http://127.0.0.1:8537/`) and opens it. The page
+Starts the web app (default `http://127.0.0.1:8537/`) and opens it. The page
 merges every `exports/eversource_export_*` folder into one continuous span
-(newest export wins on overlapping rows) and shows:
+(newest export wins on overlapping rows) and charts the 15-minute, hourly and
+daily usage with its derived cost, the billed months and bills, and flags for
+unusual usage.
 
-- summary tiles (latest day, last 7 days, estimated 30-day cost, latest bill)
-- daily / hourly / 15-minute usage with a Usage/Cost toggle, quick-range
-  presets, and a zoomable range slider
-- billed monthly usage and charges, and the bills history
-- a table view behind every chart
+When its data is behind, the page pulls new reads by itself: the server decides when a pull is due (half
+an hour after the last one, sooner after a failure) so every open tab agrees.
+An expired session is renewed in the background; the page only asks for a
+password if there isn't one saved yet.
 
-On open, if the data doesn't reach today, it kicks off an update automatically
-and re-renders when it finishes. An expired session is renewed in the
-background without interrupting you; the page only asks for a password if
-there isn't one saved yet.
-Light and dark themes follow the OS (toggleable in the header).
-`--port` picks the port; `--no-open` skips launching the browser.
+`--port` picks the port, `--no-open` skips launching the browser, and
+`--host 0.0.0.0` serves the LAN instead of only this machine. For a headless
+server, `uv run serve` does the same with `HOST` (default `0.0.0.0`) and
+`PORT` (default `8537`) taken from the environment.
 
-For a double-clickable launcher, `scripts/make_desktop_app.sh` creates
-`~/Desktop/Energy.app` (icon in `assets/`): it starts the dashboard, or just
-opens the browser if the server is already running.
+`scripts/make_desktop_app.sh [url]` creates `~/Desktop/Energy.app` (icon in
+`assets/`), a double-clickable launcher that opens the dashboard at that URL;
+with `--local` it instead starts the server from this repo, or just opens the
+browser if it is already running.
 
 ### Known devices
 
@@ -117,11 +122,12 @@ full format). The simplest device is a hand-written repeating pattern:
 ```
 
 `values_kwh` is the device's kWh in each 15-minute slot; the list repeats
-indefinitely, aligned to local midnight (so a 96-entry list describes one full
-day). The dashboard shows a filter chip per device ("− Fridge") that virtually
-subtracts its usage — and its cost, at the billing period's effective rate —
-from the interval charts, the usage table, and the summary tiles, letting you
-see what's left after the loads you already understand.
+indefinitely. Where 15-minute meter reads exist, the cycle is tracked burst by
+burst against them, so a cycling appliance is subtracted when it actually ran;
+elsewhere it is aligned to local midnight (so a 96-entry list describes one
+full day). The dashboard can virtually subtract each device's usage — and its
+cost, at the billing period's effective rate — letting you see what's left
+after the loads you already understand.
 
 A device that actually measures itself can carry `readings` instead: actual
 kWh per 15-minute slot keyed by local start time, with a coverage window.
@@ -141,16 +147,18 @@ the same device document — e.g. a machine that measures its own power draw and
 publishes its readings. Every time the dashboard is opened it re-pulls each
 source in the background and writes the fetched document back into the file,
 so it doubles as a cache: if the source is unreachable (host asleep, network
-down) the chips keep working from the last successful fetch. Timeouts are
+down) the device keeps working from the last successful fetch. Timeouts are
 short, and a changed document re-renders the page on its own a moment after
 load.
 
-To record the Mac the dashboard runs on as a device (Apple Silicon),
+To record a Mac as a device (Apple Silicon),
 `scripts/install_mac_power_agent.sh` installs a launchd agent running
 `scripts/mac_power_recorder.py`: it samples the wall input power from the
 battery telemetry once every 30 s, estimates charging that happened while
 asleep from the battery charge delta, and publishes a device document that
-`devices/mac.json` points at as its source.
+`devices/mac.json` points at as its source. When the dashboard runs on another
+machine, `scripts/install_mac_power_push.sh` adds a second agent that copies
+that document there every 15 minutes (see `devices/README.md`).
 
 ## CLI usage
 
@@ -159,7 +167,7 @@ uv run eversource.py accounts                       # list billing accounts and 
 uv run eversource.py export --start 2026-01-01      # export a date range -> exports/<timestamp>/
 uv run eversource.py export --start 2026-10-01 --end 2026-10-14
 uv run eversource.py update                         # extend from the last exported day to today
-uv run eversource.py serve                          # local dashboard
+uv run eversource.py serve                          # the dashboard
 ```
 
 - **`export`** — `--start YYYY-MM-DD` (required), `--end YYYY-MM-DD` (default:
@@ -210,5 +218,6 @@ from.
   site makes other calls it does not use (weather, disaggregation, rates,
   solar); recovering those means re-capturing a HAR from DevTools while signed
   in and pulling the operations out of it.
-- The web server binds to 127.0.0.1 only and has no authentication of its own —
-  it is meant for your own machine, not for exposing on a network.
+- The web server has no authentication of its own. `eversource.py serve` binds
+  to 127.0.0.1 unless told otherwise; `uv run serve` binds to every interface,
+  so run it only on a network you trust.

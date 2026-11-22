@@ -157,7 +157,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--name", default="Mac", help="device name in the dashboard")
     parser.add_argument("--device-out", required=True, type=pathlib.Path,
-                        help="device JSON to publish (e.g. <repo>/devices/mac.json)")
+                        help="device JSON to publish (a devices/*.json points at it)")
     parser.add_argument("--state-dir", type=pathlib.Path,
                         default=pathlib.Path.home()
                         / ".local/share/energy-dashboard/mac-power",

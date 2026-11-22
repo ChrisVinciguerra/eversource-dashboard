@@ -1,9 +1,8 @@
 # Known devices
 
-One JSON file per device. The dashboard shows a filter chip per device
-("− Fridge") that virtually subtracts its usage — and its cost, at the billing
-period's effective rate — from the interval charts, the usage table, and the
-summary tiles.
+One JSON file per device. The dashboard can virtually subtract each device's
+usage — and its cost, at the billing period's effective rate — from what the
+meter recorded.
 
 Device files are **gitignored** (they describe your home and may embed private
 hostnames); this README documents the format.
@@ -30,8 +29,10 @@ At least one of `readings` / `pattern` must be present:
   window, a missing slot means zero.
 - **`pattern`** — a *repeating estimate* used outside the readings window (or
   always, if there are no readings): kWh per 15-minute slot, repeating
-  indefinitely, aligned to local midnight. A 96-entry list describes one full
-  day; a hand-written `[0.01, 0.02]` describes a half-hour cycle.
+  indefinitely. A 96-entry list describes one full day; a hand-written
+  `[0.01, 0.02]` describes a half-hour cycle. Where 15-minute meter reads
+  exist the cycle is tracked burst by burst against them, so it is subtracted
+  when the appliance actually ran; elsewhere it is aligned to local midnight.
 
 A minimal hand-written device is just:
 
@@ -61,7 +62,7 @@ may draw through it:
 For each 15-minute slot both devices cover, a port whose energy matches the
 other device's reading (within 30%, to absorb sampling skew and conversion
 loss) is treated as the same energy metered twice; the dashboard subtracts it
-once when both chips are active. Slots where the laptop charged from a
+once when both devices are subtracted. Slots where the laptop charged from a
 different outlet match no port, so both subtract in full.
 
 ## Remote sources (self-measuring devices)
@@ -84,8 +85,19 @@ network down) keeps serving the last successful fetch.
 `scripts/mac_power_recorder.py` turns the Mac it runs on into such a device
 (Apple Silicon): it samples the wall input power from the battery telemetry,
 estimates charging that happened while asleep from the battery charge delta,
-and publishes a device file here. Install it as a launchd agent with:
+and publishes a device document. Install it as a launchd agent with:
 
 ```sh
 scripts/install_mac_power_agent.sh "My MacBook" macbook.json
 ```
+
+The agent keeps its samples and the published document under
+`~/.local/share/energy-dashboard/mac-power/` (launchd agents can't write to
+`~/Documents`), and `devices/macbook.json` here becomes a `source` pointer to
+it. When the dashboard runs on another machine, also run
+
+```sh
+scripts/install_mac_power_push.sh user@server:/path/devices/macbook.json
+```
+
+which copies the document there with `scp` every 15 minutes.
