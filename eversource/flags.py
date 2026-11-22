@@ -182,13 +182,26 @@ def _busy_stretches(
             "headline": (f"{kwh:.0f} kWh above normal since {_span(start, start)}" if ongoing and start != end
                          else f"{_span(start, end)} ran {kwh:.0f} kWh above normal"),
             "value": f"+{kwh:.0f} kWh" + (f" · ~${usd:.0f}" if usd else ""),
-            "detail": _shape([kw for d in span for kw in reads[d]], kwh, typical / 24, hours)
+            "detail": _shape([kw for d in span for kw in reads[d]], kwh, typical / 24, hours, start)
             + f" A normal day lately is ~{typical:.0f} kWh.",
         })
     return flags
 
 
-def _shape(kws: list[float], extra_kwh: float, normal_kw: float, hours: float) -> str:
+# The two loads this house runs for hours at a steady level, told apart by
+# season (they draw too alike to separate by wattage): (low kW, high kW, name
+# by month). A stretch that matches is named so it reads as the familiar thing.
+KNOWN_LOAD_KW = (0.5, 0.9)
+KNOWN_LOAD_BY_MONTH = {
+    **dict.fromkeys((6, 7, 8), "the window AC"),
+    **dict.fromkeys((10, 11, 12, 1, 2, 3, 4), "the space heater"),
+    **dict.fromkeys((5, 9), "the space heater or window AC"),
+}
+
+
+def _shape(
+    kws: list[float], extra_kwh: float, normal_kw: float, hours: float, start: str
+) -> str:
     """Say what the stretch's reads look like: one steady load, or not."""
     big = [kw for kw in kws if kw >= BIG_LOAD_KW]
     if len(big) < 4 or sum(kw - normal_kw for kw in big) * hours < 0.6 * extra_kwh:
@@ -196,5 +209,11 @@ def _shape(kws: list[float], extra_kwh: float, normal_kw: float, hours: float) -
     on_hours = f"{len(big) * hours:.0f} hours"
     low, mid, high = quantiles(big, n=4)
     if low >= 0.8 * mid and high <= 1.25 * mid:
-        return f"Mostly a steady ~{_watts(mid)} load, on for about {on_hours}."
+        low_kw, high_kw = KNOWN_LOAD_KW
+        known = (
+            f" Looks like {KNOWN_LOAD_BY_MONTH[date.fromisoformat(start).month]}."
+            if low_kw <= mid <= high_kw
+            else ""
+        )
+        return f"Mostly a steady ~{_watts(mid)} load, on for about {on_hours}.{known}"
     return f"Mostly about {on_hours} of heavy use (~{_watts(low)} to ~{_watts(high)})."
