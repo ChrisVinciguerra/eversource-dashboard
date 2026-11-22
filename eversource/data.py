@@ -199,12 +199,13 @@ def build_payload() -> Json:
         fit_patterns(devices, meter)
 
     intervals: Json = {}
+    rates: dict[str, dict[str, float] | None] = {}
     last_read: str | None = None
     for name in INTERVAL_DATASETS:
         frame = data.get(name)
         if frame is None:
             continue
-        rate_by_day = add_effective_rate_cost(frame, bills)
+        rate_by_day = rates[name] = add_effective_rate_cost(frame, bills)
         intervals[name] = _interval_payload(frame, rate_by_day is not None)
         if devices and unit_of(frame) == "kWh":
             starts = sorted(set(frame["start"]))
@@ -222,13 +223,14 @@ def build_payload() -> Json:
         # daily bucket "ends" at the next midnight, past the actual reads.
         last_read = frame["end"].max() or last_read
 
-    # Anomaly flags from the finest sub-daily kWh reads (device-free: both
-    # detectors compare the metered total against its own history).
+    # Flags from the finest sub-daily kWh reads (device-free: both detectors
+    # compare the metered total against its own history), costed at the same
+    # effective rate as the reads.
     flags: list[Json] = []
     for name, hours in (("quarter_hour", 0.25), ("hourly", 1.0)):
         frame = data.get(name)
         if frame is not None and unit_of(frame) == "kWh":
-            flags = compute_flags(frame, hours)
+            flags = compute_flags(frame, hours, rates.get(name))
             break
 
     return {
