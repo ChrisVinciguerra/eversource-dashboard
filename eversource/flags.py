@@ -91,7 +91,7 @@ def compute_flags(
 def _floor_flag(
     full: list[str], reads: dict[str, list[float]], rates: dict[str, float]
 ) -> list[Json]:
-    """The past week's always-on floor against the four weeks before it."""
+    """The past week's always-on floor against the eight weeks before it."""
     if len(full) < FLOOR_WINDOW + MIN_HISTORY:
         return []
     floor = {d: sorted(reads[d])[int(len(reads[d]) * FLOOR_PCTL)] for d in full}
