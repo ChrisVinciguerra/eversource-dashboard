@@ -9,6 +9,8 @@ its length, level and season.
   heating bump to ~1 kW.
 - Space heater and window AC: a steady 0.5-0.9 kW. They draw too alike to
   tell apart by wattage, so the month decides (see steady_load_name).
+- Space heater on its thermostat: outside summer, a run that wanders or sits
+  higher (up to ~1.4 kW) as the heater cycles between settings.
 
 These are guesses from shape, not measurements; anything that does not match
 is left unnamed.
@@ -24,6 +26,9 @@ from .config import Json
 RUN_KW = 0.42  # the house is "running something big" at or above this
 MIN_SLOTS = 4  # an hour
 STEADY_KW = (0.5, 0.9)
+HEATER_MAX_KW = 1.45  # median of a run with the heater cycling on its thermostat
+HEATER_PEAK_KW = 1.8  # a read above this is something bigger than the heater
+SUMMER = (6, 7, 8)
 DISHWASHER_HOURS = (3.0, 4.25)
 DISHWASHER_KW = (0.48, 0.68)
 DISHWASHER_BUMP_KW = 0.85
@@ -51,6 +56,8 @@ def _name(kws: list[float], month: int) -> str | None:
     low, _, high = quantiles(kws, n=4)
     if STEADY_KW[0] <= mid <= STEADY_KW[1] and low >= 0.8 * mid and high <= 1.25 * mid:
         return steady_load_name(month)
+    if month not in SUMMER and STEADY_KW[0] <= mid <= HEATER_MAX_KW and max(kws) <= HEATER_PEAK_KW:
+        return "space heater"
     return None
 
 
