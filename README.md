@@ -57,6 +57,7 @@ where there is no keychain (a Linux server), in
   - `data.py` — merging export folders and shaping the dashboard payload
   - `devices.py` — known-device streams: loading, remote sources, expansion
   - `flags.py` — anomaly flags computed from the meter reads
+  - `loads.py` — names the known big appliances (heater, AC, dishwasher) from the shape of the reads
   - `progress.py` — progress messages, to stderr or into a web job's log
   - `cli.py` — the command-line interface
   - `web/` — FastAPI app (`app.py`) and the static dashboard page (`static/`)

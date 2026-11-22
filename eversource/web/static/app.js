@@ -453,6 +453,11 @@ function alwaysOnEstimate() {
 
 const flagsOn = (day) =>
   (state.data.flags || []).filter((f) => f.date <= day && day <= (f.end_date || f.date));
+// Known appliances' runs (guessed server-side from the meter's shape) that
+// touch a day; a run past midnight belongs to both days.
+const loadsOn = (day) => (state.data.loads || []).filter((l) =>
+  l.start.slice(0, 10) <= day && (l.end.slice(0, 10) > day || (l.end.slice(0, 10) === day && l.end.slice(11) > "00:00")));
+const shortLoad = (name) => name.replace("space ", "").replace("window ", "");
 const pad2 = (n) => String(n).padStart(2, "0");
 const median = (xs) => (xs.length ? xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)] : 0);
 
@@ -500,14 +505,17 @@ function renderCalendar(win, facts) {
     const mark = day === end ? `<i>bill </i>${end > win.end ? "closes" : "closed"}`
       : day === win.start ? "day 1"
       : day === partial ? `<i>to </i>${esc(clockLabel(`${pad2(Math.floor(covered))}:${pad2(Math.round((covered % 1) * 60))}`))}` : "";
+    const ran = [...new Set(loadsOn(day).map((l) => shortLoad(l.name)))];
     const body = date + (mark ? `<span class="d-mark">${mark}</span>` : "") +
+      (ran.length ? `<span class="d-load">${esc(ran.join(", "))}</span>` : "") +
       (d ? `<span class="d-val">${v == null ? "–" : esc(cost ? fmtUsd(v) : fmtNum(v, 1))}</span>` : "");
     if (!d) {
       html += `<div class="${cls.join(" ")}">${body}</div>`;
       continue;
     }
     const title = `${fmtDay(day, DAY_FMT)}: ${fmtNum(d.value)} ${unit}` +
-      (d.hasCost ? `, ${fmtUsd(d.cost)}` : "") + flags.map((f) => `\n${f.headline}`).join("");
+      (d.hasCost ? `, ${fmtUsd(d.cost)}` : "") + flags.map((f) => `\n${f.headline}`).join("") +
+      (ran.length ? `\nLooks like: ${ran.join(", ")}` : "");
     const heat = v != null && full > 0 ? Math.min(1, Math.max(0, v / full)) : 0;
     html += `<button type="button" class="${cls.join(" ")}" data-day="${day}" style="--h:${heat.toFixed(3)}"` +
       ` aria-pressed="${day === state.selectedDay}" title="${esc(title)}">${body}</button>`;
@@ -882,6 +890,23 @@ function renderDay() {
       lineStyle: { color: t.ruleStrong, width: 1, type: "dashed" },
       label: { formatter: "latest read", color: t.muted, fontSize: 10.5, position: "end", distance: 4 },
       data: [{ xAxis: filled }],
+    };
+  }
+
+  // Known appliances' runs as labelled bands behind the lines.
+  const runs = loadsOn(day);
+  if (series.length && runs.length) {
+    // First and last slot of the run within this day (its end is exclusive).
+    const from = (l) => (l.start.slice(0, 10) < day ? 0 : Math.floor(slotOf(l.start)));
+    const to = (l) => (l.end.slice(0, 10) > day ? count - 1 : Math.ceil(slotOf(l.end)) - 1);
+    series[0].markArea = {
+      silent: true,
+      itemStyle: { color: t.tint },
+      label: { color: t.text2, fontSize: 11, position: "insideTop", distance: 5 },
+      data: runs.map((l) => [
+        { name: `${shortLoad(l.name)} · ${fmtNum(l.kwh, 1)} kWh`, xAxis: from(l) },
+        { xAxis: to(l) },
+      ]),
     };
   }
 

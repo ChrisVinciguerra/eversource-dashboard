@@ -28,6 +28,7 @@ from statistics import median, quantiles
 import pandas as pd
 
 from .config import Json
+from .loads import STEADY_KW, steady_load_name
 
 RECENT_DAYS = 7  # an episode that ended longer ago than this is old news
 MAX_FLAGS = 3
@@ -188,17 +189,6 @@ def _busy_stretches(
     return flags
 
 
-# The two loads this house runs for hours at a steady level, told apart by
-# season (they draw too alike to separate by wattage): (low kW, high kW, name
-# by month). A stretch that matches is named so it reads as the familiar thing.
-KNOWN_LOAD_KW = (0.5, 0.9)
-KNOWN_LOAD_BY_MONTH = {
-    **dict.fromkeys((6, 7, 8), "the window AC"),
-    **dict.fromkeys((10, 11, 12, 1, 2, 3, 4), "the space heater"),
-    **dict.fromkeys((5, 9), "the space heater or window AC"),
-}
-
-
 def _shape(
     kws: list[float], extra_kwh: float, normal_kw: float, hours: float, start: str
 ) -> str:
@@ -209,10 +199,9 @@ def _shape(
     on_hours = f"{len(big) * hours:.0f} hours"
     low, mid, high = quantiles(big, n=4)
     if low >= 0.8 * mid and high <= 1.25 * mid:
-        low_kw, high_kw = KNOWN_LOAD_KW
         known = (
-            f" Looks like {KNOWN_LOAD_BY_MONTH[date.fromisoformat(start).month]}."
-            if low_kw <= mid <= high_kw
+            f" Looks like the {steady_load_name(date.fromisoformat(start).month)}."
+            if STEADY_KW[0] <= mid <= STEADY_KW[1]
             else ""
         )
         return f"Mostly a steady ~{_watts(mid)} load, on for about {on_hours}.{known}"

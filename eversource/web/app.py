@@ -202,6 +202,7 @@ def api_data() -> Json:
         return {
             "intervals": {},
             "flags": [],
+            "loads": [],
             "monthly": None,
             "bills": None,
             "last_read": None,
