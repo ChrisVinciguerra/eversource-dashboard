@@ -84,6 +84,7 @@
     </div>
 
     <div class="cycle-body">
+      <div class="col">
       <div class="plot">
         <div class="chart cal" id="cal">
           <div class="cal-days" aria-hidden="true">
@@ -95,6 +96,37 @@
         <div class="table-wrap" id="cycle-table" hidden></div>
         <ul id="flags-list" class="flags" aria-label="Worth a look"></ul>
       </div>
+      <!-- The day picked on the calendar, slot by slot, directly under it. -->
+      <section id="day-band" hidden>
+        <div class="head">
+          <div class="head-title">
+            <h2 id="day-title">Day</h2>
+            <span class="pager" role="group" aria-label="Day">
+              <button id="day-prev" type="button" aria-label="Previous day">‹</button>
+              <button id="day-next" type="button" aria-label="Next day">›</button>
+            </span>
+            <span id="day-read" class="sub"></span>
+          </div>
+          <div class="head-tools">
+            <div class="tabs" id="view-seg" role="group" aria-label="Device breakdown">
+              <button type="button" data-view="lines" class="active">Lines</button>
+              <button type="button" data-view="stacked">Stacked</button>
+              <button type="button" data-view="total">Total</button>
+            </div>
+            <div class="tabs" id="res-seg" role="group" aria-label="Resolution" hidden>
+              <button type="button" data-res="quarter_hour" class="active">15 min</button>
+              <button type="button" data-res="hourly">Hourly</button>
+            </div>
+            <button type="button" class="link table-toggle" data-for="day">Table</button>
+          </div>
+        </div>
+          <div class="plot">
+            <div class="chart" id="day-chart"></div>
+            <div class="table-wrap" id="day-table" hidden></div>
+          </div>
+      </section>
+      </div>
+      <div class="col">
       <aside class="read" aria-label="Cycle summary">
         <p class="closes" id="closes"></p>
         <p class="closes-sub" id="closes-sub"></p>
@@ -103,40 +135,9 @@
         <div class="land-vs"><span class="land-delta" id="land-delta"></span> <span class="land-ref" id="land-ref"></span></div>
         <div class="chart" id="trend-chart"></div>
       </aside>
-    </div>
-  </section>
-
-  <!-- The day picked on the calendar, slot by slot. -->
-  <section id="day-band" hidden>
-    <div class="head">
-      <div class="head-title">
-        <h2 id="day-title">Day</h2>
-        <span class="pager" role="group" aria-label="Day">
-          <button id="day-prev" type="button" aria-label="Previous day">‹</button>
-          <button id="day-next" type="button" aria-label="Next day">›</button>
-        </span>
-        <span id="day-read" class="sub"></span>
-      </div>
-      <div class="head-tools">
-        <div class="tabs" id="view-seg" role="group" aria-label="Device breakdown">
-          <button type="button" data-view="lines" class="active">Lines</button>
-          <button type="button" data-view="stacked">Stacked</button>
-          <button type="button" data-view="total">Total</button>
-        </div>
-        <div class="tabs" id="res-seg" role="group" aria-label="Resolution" hidden>
-          <button type="button" data-res="quarter_hour" class="active">15 min</button>
-          <button type="button" data-res="hourly">Hourly</button>
-        </div>
-        <button type="button" class="link table-toggle" data-for="day">Table</button>
-      </div>
-    </div>
-    <div class="day-body">
-      <div class="plot">
-        <div class="chart" id="day-chart"></div>
-        <div class="table-wrap" id="day-table" hidden></div>
-      </div>
       <div class="key" id="device-key" hidden>
         <ul id="key-list"></ul>
+      </div>
       </div>
     </div>
   </section>

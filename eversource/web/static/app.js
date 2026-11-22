@@ -899,12 +899,14 @@ function renderDay() {
     // First and last slot of the run within this day (its end is exclusive).
     const from = (l) => (l.start.slice(0, 10) < day ? 0 : Math.floor(slotOf(l.start)));
     const to = (l) => (l.end.slice(0, 10) > day ? count - 1 : Math.ceil(slotOf(l.end)) - 1);
+    const narrow = chart.getWidth() < 560;   // a phone: the name alone
     series[0].markArea = {
       silent: true,
       itemStyle: { color: t.tint },
       label: { color: t.text2, fontSize: 11, position: "insideTop", distance: 5 },
-      data: runs.map((l) => [
-        { name: `${shortLoad(l.name)} · ${fmtNum(l.kwh, 1)} kWh`, xAxis: from(l) },
+      // Neighbouring runs take turns on two label rows so they don't collide.
+      data: runs.map((l, i) => [
+        { name: shortLoad(l.name) + (narrow ? "" : ` · ${fmtNum(l.kwh, 1)} kWh`), xAxis: from(l), label: { distance: i % 2 ? 20 : 5 } },
         { xAxis: to(l) },
       ]),
     };

@@ -159,13 +159,13 @@ main, .mast, .banner, .foot {
 .head h2 { margin: 0; font-size: 22px; font-weight: 640; letter-spacing: -0.015em; }
 .sub { color: var(--text-2); font-size: 13px; font-weight: 400; letter-spacing: 0; }
 
-.cycle-body, .day-body {
+.cycle-body {
   display: grid;
   grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
   column-gap: 48px;
 }
 .cycle-body { margin-top: 14px; }
-.plot { min-width: 0; }
+.col, .plot { min-width: 0; }
 .chart.loading { opacity: 0.5; transition: opacity 0.2s; }
 .plot.as-table > .chart { display: none; }   /* a chart showing its table steps aside */
 
@@ -180,7 +180,7 @@ main, .mast, .banner, .foot {
   grid-template: "date mark" auto "load load" auto "val val" 1fr / auto 1fr;
   column-gap: 4px;
   min-width: 0;
-  height: 78px;
+  height: 64px;
   padding: 6px 9px 8px;
   border: 0;
   border-radius: 3px;
@@ -238,11 +238,12 @@ main, .mast, .banner, .foot {
 
 /* ----------------------------------------------------------------- day --- */
 
-#day-band { margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rule-strong); }
+/* Directly under the calendar, so picking a day shows it without a scroll. */
+#day-band { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--rule-strong); }
 #day-band h2 { font-size: 18px; font-weight: 630; }
 #day-band .pager { margin-right: 4px; }
 #day-chart { height: 260px; margin-top: 6px; }
-.day-body .table-wrap { margin-top: 10px; }
+#day-band .table-wrap { margin-top: 10px; }
 
 /* The device key is the day chart's legend, the per-device toggle, and the
    split for the day and for the cycle, in one list. */
@@ -344,7 +345,7 @@ button.key-row:hover .key-name { text-decoration: underline; text-underline-offs
 /* One column: the calendar, then its read; the day chart, then its key. */
 
 @media (max-width: 900px) {
-  .cycle-body, .day-body { grid-template-columns: minmax(0, 1fr); }
+  .cycle-body { grid-template-columns: minmax(0, 1fr); }
   .read { padding-top: 24px; }
   .key { padding-top: 14px; max-width: 420px; }
 }
