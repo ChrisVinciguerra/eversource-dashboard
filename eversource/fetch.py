@@ -96,9 +96,7 @@ def fetch_monthly(
     """Return billed monthly usage, charges and temperatures (Eversource API)."""
     web_id = client.accounts()["webId"]
     frames = []
-    # Both the meter list and usageDetails come back null (with a 200) while
-    # Eversource's billing backend is down; that is "no monthly data", which
-    # the export skips, not a reason to fail the interval reads alongside it.
+    # While Eversource billing is down, meters and usageDetails are both null.
     for meter in account["serviceMeterDetails"] or []:
         service_type = "electric" if meter["metertype"] == "E" else "gas"
         data = client.es_get(
@@ -109,11 +107,8 @@ def fetch_monthly(
             f"&serviceType={service_type}&meterNumber={meter['meternumber']}"
             f"&monthOfData={months}"
         )
-        frames.append(
-            pd.json_normalize(data.get("usageDetails") or []).assign(
-                meter=meter["meternumber"]
-            )
-        )
+        usage = pd.json_normalize(data.get("usageDetails") or [])
+        frames.append(usage.assign(meter=meter["meternumber"]))
     if not frames:
         return pd.DataFrame(columns=MONTHLY_API_COLUMNS)
     raw = pd.concat(frames, ignore_index=True).reindex(columns=MONTHLY_API_COLUMNS)

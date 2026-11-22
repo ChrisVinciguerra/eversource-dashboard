@@ -199,10 +199,10 @@ query WDB_GetCostUsageReadsForBills($selectedAccount: ID, $last: Int, $timeInter
 
 
 def _has_meters(accounts: Json) -> bool:
-    """Whether an account directory carries a meter list for every account."""
+    """Eversource nulls every meter list (with a 200) while billing is down."""
     return all(
-        item.get("serviceMeterDetails") is not None
-        for item in accounts.get("accountSwitcherItems") or []
+        item["serviceMeterDetails"] is not None
+        for item in accounts["accountSwitcherItems"]
     )
 
 
@@ -292,16 +292,13 @@ class Client:
     def accounts(self) -> Json:
         """Return the account/meter directory for this login (cached)."""
         cached = self.cfg.get("accounts")
-        if cached is not None and _has_meters(cached):
+        if cached and _has_meters(cached):
             return cached
         fresh = self.es_get(
             "/account/api/account?getServiceAccountsAndMeterDetails=true"
             "&isActiveOnly=false&isLegacyIncluded=true"
         )
-        # While Eversource's billing backend is down (overnight maintenance)
-        # this answers 200 with every account's meter list nulled out. Usable
-        # for this run, but caching it would outlive the outage: nothing
-        # refetches the directory short of a new sign-in.
+        # Only a new sign-in drops the cache, so an outage reply must not enter it.
         if _has_meters(fresh):
             self.cfg["accounts"] = fresh
             save_config(self.cfg)
