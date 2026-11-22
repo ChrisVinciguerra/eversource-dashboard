@@ -56,7 +56,7 @@ def cmd_accounts(args: argparse.Namespace, cfg: Config) -> None:
                 f"{item['billingAccountIdentifier']}  "
                 f"[{item['type']}]  {item['address']}"
             )
-            for meter in item["serviceMeterDetails"]:
+            for meter in item["serviceMeterDetails"] or []:
                 print(f"    meter {meter['meternumber']} (type {meter['metertype']})")
 
 

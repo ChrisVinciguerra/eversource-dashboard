@@ -198,6 +198,14 @@ query WDB_GetCostUsageReadsForBills($selectedAccount: ID, $last: Int, $timeInter
 """
 
 
+def _has_meters(accounts: Json) -> bool:
+    """Whether an account directory carries a meter list for every account."""
+    return all(
+        item.get("serviceMeterDetails") is not None
+        for item in accounts.get("accountSwitcherItems") or []
+    )
+
+
 # ------------------------------------------------------------------ client --
 
 
@@ -283,13 +291,21 @@ class Client:
 
     def accounts(self) -> Json:
         """Return the account/meter directory for this login (cached)."""
-        if "accounts" not in self.cfg:
-            self.cfg["accounts"] = self.es_get(
-                "/account/api/account?getServiceAccountsAndMeterDetails=true"
-                "&isActiveOnly=false&isLegacyIncluded=true"
-            )
+        cached = self.cfg.get("accounts")
+        if cached is not None and _has_meters(cached):
+            return cached
+        fresh = self.es_get(
+            "/account/api/account?getServiceAccountsAndMeterDetails=true"
+            "&isActiveOnly=false&isLegacyIncluded=true"
+        )
+        # While Eversource's billing backend is down (overnight maintenance)
+        # this answers 200 with every account's meter list nulled out. Usable
+        # for this run, but caching it would outlive the outage: nothing
+        # refetches the directory short of a new sign-in.
+        if _has_meters(fresh):
+            self.cfg["accounts"] = fresh
             save_config(self.cfg)
-        return self.cfg["accounts"]
+        return fresh
 
     def pick_account(self, number: str | None) -> Json:
         """Return the requested billing account, or the first one."""
