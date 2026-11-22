@@ -1,8 +1,8 @@
-/* Eversource energy dashboard — "two altitudes" layout.
-   The billing cycle and a single day are both always on screen: the overview
-   chart (one bar per day) is the navigation, clicking a day puts it under the
-   15-minute (or hourly) microscope below. A side rail carries the cycle pace, the device
-   breakdown, and anomaly flags; one generated sentence narrates the month.
+/* Eversource energy dashboard — the billing cycle on a calendar.
+   The cycle is a month grid, one cell per day, with its closing day marked;
+   beside it, when the bill closes, where it will land, and the running total
+   against the previous cycle. Picking a day opens it underneath at 15-minute
+   or hourly resolution, one line per known device.
    Data comes from /api/data; long operations (update, sign-in) run as
    server-side jobs polled via /api/job. */
 
@@ -10,18 +10,18 @@
 
 const $ = (id) => document.getElementById(id);
 
-// The filter picks survive reloads.
-const savedView = localStorage.getItem("view");
+// The picks survive reloads.
+const savedView = localStorage.getItem("dayView");
 const state = {
   data: null,
   metric: localStorage.getItem("metric") || "usage", // usage | cost
-  // Device breakdown as separate series (default), "stacked" areas, or
-  // "total": the one net series with every device folded in.
+  // The day chart: known devices as separate "lines" (default) or "stacked"
+  // bars, or "total": the one metered series with every device folded in.
   view: savedView === "stacked" || savedView === "total" ? savedView : "lines",
   // Known devices left inside "Everything else" instead of broken out.
   folded: new Set(JSON.parse(localStorage.getItem("folded") || "[]")),
   cycleIdx: 0,        // 0 = newest window (the running cycle)
-  selectedDay: null,  // "YYYY-MM-DD" under the microscope
+  selectedDay: null,  // "YYYY-MM-DD" shown in the day chart
   // Preferred resolution of the day chart; falls back to whatever exists.
   detailRes: localStorage.getItem("detailRes") || "quarter_hour",
 };
@@ -30,34 +30,38 @@ const charts = {};        // id -> echarts instance
 
 // ------------------------------------------------------------------ theme --
 
+const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const isDark = () =>
+  (document.documentElement.dataset.theme || (darkQuery.matches ? "dark" : "light")) === "dark";
+
 function applyTheme(theme) {
   if (theme) document.documentElement.dataset.theme = theme;
-  else delete document.documentElement.dataset.theme;
+  $("theme-btn").textContent = isDark() ? "Light" : "Dark";
 }
-applyTheme(localStorage.getItem("theme") || null);
+applyTheme(localStorage.getItem("theme"));
 
 $("theme-btn").addEventListener("click", () => {
-  const dark = getComputedStyle(document.body).colorScheme === "dark";
-  const next = dark ? "light" : "dark";
+  const next = isDark() ? "light" : "dark";
   localStorage.setItem("theme", next);
   applyTheme(next);
   renderAll();
 });
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  if (!localStorage.getItem("theme")) renderAll();
-});
+darkQuery.addEventListener("change", () => { applyTheme(); renderAll(); });
 
+// The CSS tokens, resolved for the canvas: each is a light-dark(a, b) pair.
 function tokens() {
-  const css = getComputedStyle(document.body);
-  const v = (name) => css.getPropertyValue(name).trim();
+  const css = getComputedStyle(document.documentElement);
+  const dark = isDark();
+  const v = (name) => {
+    const raw = css.getPropertyValue(name).trim();
+    const pair = /^light-dark\((\S+),\s*(\S+)\)$/.exec(raw);
+    return pair ? pair[dark ? 2 : 1] : raw;
+  };
   return {
-    surface: v("--surface-1"),
-    textPrimary: v("--text-primary"),
-    textSecondary: v("--text-secondary"),
-    muted: v("--text-muted"),
-    gridline: v("--gridline"),
-    baseline: v("--baseline"),
-    series: [v("--series-1"), v("--series-2"), v("--series-3"), v("--series-4")],
+    page: v("--page"), ink: v("--ink"), text2: v("--text-2"), muted: v("--muted"),
+    rule: v("--rule"), ruleStrong: v("--rule-strong"), tint: v("--tint"),
+    meter: v("--meter"), ref: v("--ref"), flag: v("--flag"),
+    devices: [v("--dev-1"), v("--dev-2"), v("--dev-3"), v("--dev-4")],
   };
 }
 
@@ -100,65 +104,55 @@ const daysBetween = (a, b) => Math.round((dayMs(b) - dayMs(a)) / 86400e3);
 const fmtDay = (day, opts) =>
   dayDate(day).toLocaleString("en-US", opts || { month: "short", day: "numeric" });
 
+
 // ------------------------------------------------------------ chart chrome --
 
-function baseOption(t) {
+const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif";
+let still = false;   // set while re-rendering for a resize: no transitions
+const PLOT = { left: 44, right: 10 };   // the day chart's side insets
+
+const round = (x, unit = 1e6) => (x == null ? null : Math.round(x * unit) / unit);
+const axisText = (t) => ({ color: t.muted, fontSize: 11 });
+const moneyTick = (v) => "$" + (v >= 1 || v === 0 ? fmtNum(v, 0) : round(v, 1e3));
+
+function chartBase(t) {
   return {
-    color: t.series,
-    textStyle: { fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" },
-    grid: { left: 56, right: 16, top: 28, bottom: 28, containLabel: false },
-    xAxis: {
-      axisLine: { lineStyle: { color: t.baseline } },
-      axisTick: { show: false },
-      axisLabel: { color: t.muted, fontSize: 11.5 },
-      splitLine: { show: false },
-    },
-    yAxis: {
-      splitNumber: 4,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: t.muted, fontSize: 11.5 },
-      nameTextStyle: { color: t.textSecondary, align: "left" },
-      splitLine: { lineStyle: { color: t.gridline, width: 1, type: "solid" } },
-    },
+    textStyle: { fontFamily: FONT },
+    animation: !still,
+    animationDuration: 200,
+    animationDurationUpdate: 200,
     tooltip: {
       trigger: "axis",
-      backgroundColor: t.surface,
-      borderColor: t.gridline,
+      backgroundColor: t.page,
+      borderColor: t.ruleStrong,
       borderWidth: 1,
-      textStyle: { color: t.textPrimary, fontSize: 12.5 },
-      axisPointer: { type: "line", lineStyle: { color: t.baseline, width: 1 } },
+      padding: [7, 10],
+      textStyle: { color: t.ink, fontSize: 12.5 },
+      extraCssText: "box-shadow:none;border-radius:4px;font-variant-numeric:tabular-nums;",
     },
   };
 }
 
-// A legend only earns its place with two or more series; a single series is
-// already named by the card title.
-function legendFor(series, t) {
-  if (series.length < 2) return { show: false };
-  return { top: 0, right: 0, textStyle: { color: t.textSecondary } };
+function valueAxis(t, extra) {
+  return {
+    type: "value",
+    axisLine: { show: false },
+    axisTick: { show: false },
+    axisLabel: axisText(t),
+    splitLine: { lineStyle: { color: t.rule } },
+    nameTextStyle: { ...axisText(t), align: "right", padding: [0, 8, 0, 0] },
+    nameGap: 8,
+    ...extra,
+  };
 }
 
-// Metric-dependent y-axis labeling shared by the usage/cost charts.
-function metricYAxis(opt, unit) {
-  opt.yAxis.name = state.metric === "cost" ? "Cost ($)" : `Usage (${unit})`;
-  if (state.metric === "cost")
-    opt.yAxis.axisLabel.formatter = (v) => "$" + fmtNum(v, v >= 1 ? 0 : 2);
-}
-
-function tooltipRows(params, valueFmt) {
-  return params
-    .filter((p) => p.value != null && (Array.isArray(p.value) ? p.value[1] : p.value) != null)
-    .map((p) => {
-      const v = Array.isArray(p.value) ? p.value[1] : p.value;
-      return `<div style="display:flex;align-items:center;gap:6px;margin-top:2px">
-         <span style="width:12px;height:2px;background:${p.color};flex:none"></span>
-         <strong>${esc(valueFmt(v))}</strong>
-         <span style="opacity:.75">${esc(p.seriesName)}</span>
-       </div>`;
-    })
-    .join("");
-}
+// Tooltip pieces: a muted heading, then "swatch value name" rows.
+const tipHead = (t, text) => `<div style="color:${t.text2}">${esc(text)}</div>`;
+const tipRow = (color, value, name) =>
+  `<div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+     <span style="width:8px;height:8px;background:${color || "transparent"};flex:none"></span>
+     <strong>${esc(value)}</strong><span style="opacity:.7">${esc(name)}</span>
+   </div>`;
 
 // Reuse the instance across renders: updates morph in place instead of
 // replaying the entry animation.
@@ -170,7 +164,12 @@ function makeChart(id) {
 // Axes and series are rebuilt wholesale each render, so stale pieces (an
 // axis formatter, a removed series) don't linger through option merging.
 const REPLACE = { replaceMerge: ["xAxis", "yAxis", "series"] };
-window.addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
+window.addEventListener("resize", () => {
+  Object.values(charts).forEach((c) => c.resize());
+  still = true;
+  renderMain();   // label density follows the width
+  still = false;
+});
 
 // ------------------------------------------------------------ data shapes --
 
@@ -184,9 +183,7 @@ const DETAIL_RESES = ["quarter_hour", "hourly"];
 const detailRes = () =>
   [state.detailRes, ...DETAIL_RESES].find((r) => DETAIL_RESES.includes(r) && intervalFor(r)) || null;
 
-// Known-device names in a stable order, shared by the chart's component
-// series and the filter chips so both map a device to the same palette slot:
-// "Everything else" takes slot 0, device i takes slot i + 1 (cycling).
+// Known-device names in a stable order: device i always takes color i.
 function deviceNames() {
   return [...new Set(
     Object.values(state.data.intervals || {})
@@ -195,10 +192,6 @@ function deviceNames() {
   )];
 }
 
-function paletteSlot(name) {
-  return name === "Everything else" ? 0 : deviceNames().indexOf(name) + 1;
-}
-const slotColor = (t, name) => t.series[paletteSlot(name) % t.series.length];
 
 // Device streams with doubly-metered energy attributed exactly once: each
 // overlap comes off the first-named device, so stacking never double-counts.
@@ -260,18 +253,28 @@ function remainderEntry(res, comps) {
   return entry;
 }
 
-// The split of the meter the current view asks for: each unfolded device plus
-// "Everything else", or the plain metered series in total mode / no devices.
+
+// A device's color; the meter color for everything that isn't a known device
+// ("Everything else", or the plain metered series).
+const seriesColor = (t, name) => {
+  const i = deviceNames().indexOf(name);
+  return i < 0 ? t.meter : t.devices[i % t.devices.length];
+};
+const cssColor = (name) => {
+  const i = deviceNames().indexOf(name);
+  return i < 0 ? "var(--meter)" : `var(--dev-${(i % 4) + 1})`;
+};
+
+// The split of the meter the current view asks for, in stacking order: each
+// unfolded device, then "Everything else" on top. Total mode (or no known
+// devices) is the plain metered series.
 function viewEntries(res) {
   const interval = intervalFor(res);
   if (!interval) return { entries: [], split: false };
   const comps = state.view === "total" ? [] : componentEntries(res);
-  const shown = comps.filter((dev) => !state.folded.has(dev.name));
   if (!comps.length) return { entries: interval.series, split: false };
-  return {
-    entries: [remainderEntry(res, shown), ...shown].filter(Boolean),
-    split: true,
-  };
+  const shown = comps.filter((dev) => !state.folded.has(dev.name));
+  return { entries: [...shown, remainderEntry(res, shown)].filter(Boolean), split: true };
 }
 
 function dailyTotals() {
@@ -441,548 +444,540 @@ function alwaysOnEstimate() {
   return kw > 0 ? kw : null;
 }
 
-// ---------------------------------------------------------------- tagline --
 
-// One sentence narrating the running cycle; strong tags wrap only numbers we
-// formatted ourselves.
-function renderTagline() {
-  const el = $("tagline");
-  const f = cycleFacts();
-  if (!f) { el.hidden = true; return; }
-  const parts = [];
-  parts.push(`${f.elapsed} day${f.elapsed === 1 ? "" : "s"} into the billing cycle — ` +
-    `${fmtNum(f.usage, 0)} ${esc(f.unit)} so far`);
-  if (f.projUsage != null) {
-    // Bold only the headline number: the projected cost, or usage without one.
-    parts.push(f.projCost != null
-      ? `tracking ~${fmtNum(f.projUsage, 0)} ${esc(f.unit)} (<strong>~${fmtUsd(f.projCost, 0)}</strong>)`
-      : `tracking <strong>~${fmtNum(f.projUsage, 0)} ${esc(f.unit)}</strong>`);
-  }
-  if (f.vsLastPct != null && Number.isFinite(f.vsLastPct)) {
-    const over = f.vsLastPct > 0;
-    parts.push(`<strong class="${over ? "delta-bad" : "delta-good"}">` +
-      `${Math.abs(f.vsLastPct).toFixed(0)}% ${over ? "over" : "under"}</strong> last cycle`);
-  }
-  let text = parts.join(", ") + `. Bill in about ${f.daysLeft} days.`;
-  const flags = state.data.flags || [];
-  if (flags.length) {
-    text += ` ⚑ ${flags.length} thing${flags.length === 1 ? "" : "s"} worth a look.`;
-  }
-  el.innerHTML = text;
-  el.hidden = false;
-}
+// --------------------------------------------------------------- calendar --
+// The billing cycle as a month grid: week rows, weekday columns, real dates.
+// Each day of the cycle carries its amount in the measure on show and is
+// shaded by it; the first and the closing day are named; days outside the
+// cycle are bare dates. A day with reads is a button that opens it below.
 
-// --------------------------------------------------------- overview chart --
+const flagsOn = (day) =>
+  (state.data.flags || []).filter((f) => f.date <= day && day <= (f.end_date || f.date));
+const pad2 = (n) => String(n).padStart(2, "0");
+const median = (xs) => (xs.length ? xs.slice().sort((a, b) => a - b)[Math.floor(xs.length / 2)] : 0);
 
-function overviewFlagsByDay() {
-  const out = new Map();
-  for (const flag of state.data.flags || []) {
-    let d = flag.date;
-    while (d <= flag.end_date) {
-      if (!out.has(d)) out.set(d, flag);
-      d = addDays(d, 1);
+function renderCalendar(win, facts) {
+  const cost = state.metric === "cost";
+  const unit = intervalFor("daily").unit;
+  const amount = (d) => (cost ? (d.hasCost ? d.cost : null) : d.value);
+  const days = new Map(windowDays(win).map((d) => [d.day, d]));
+  // A billed cycle ends exactly; the running one on its estimated closing day.
+  const end = facts && facts.endEst > win.end ? facts.endEst : win.end;
+  const newest = dayList().at(-1);
+  const covered = dayCoverage(newest) * 24;
+  const partial = win.current && covered < 24 ? newest : null;
+  const now = new Date();
+  const today = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  // Shading is relative to the cycle's own typical day and saturates at 2.5×
+  // it, so one extreme day doesn't wash out the difference between the rest.
+  const full = 2.5 * median([...days.values()]
+    .filter((d) => d.day !== partial).map(amount).filter((v) => v != null));
+  const first = addDays(win.start, -dayDate(win.start).getDay());
+  const count = Math.ceil((daysBetween(first, end) + 1) / 7) * 7;
+
+  let html = "";
+  for (let i = 0; i < count; i++) {
+    const day = addDays(first, i);
+    const dom = +day.slice(8);
+    const date = `<span class="d-date">${i === 0 || dom === 1 ? esc(fmtDay(day)) : dom}</span>`;
+    if (day < win.start || day > end) {
+      html += `<div class="day out">${date}</div>`;
+      continue;
     }
+    const d = days.get(day);
+    const v = d ? amount(d) : null;
+    const flags = flagsOn(day);
+    const cls = ["day", d ? "has" : "open"];
+    if (day === today) cls.push("today");
+    if (day === state.selectedDay) cls.push("sel");
+    if (day === end) cls.push("end", end > win.end ? "est" : "");
+    if (flags.length) {
+      cls.push("flag");
+      if (flags.some((f) => f.date === day)) cls.push("flag-a");
+      if (flags.some((f) => (f.end_date || f.date) === day)) cls.push("flag-z");
+    }
+    // One note per cell: the cycle's ends, else how far today's reads go.
+    const mark = day === end ? `<i>bill </i>${end > win.end ? "closes" : "closed"}`
+      : day === win.start ? "day 1"
+      : day === partial ? `<i>to </i>${esc(clockLabel(`${pad2(Math.floor(covered))}:${pad2(Math.round((covered % 1) * 60))}`))}` : "";
+    const body = date + (mark ? `<span class="d-mark">${mark}</span>` : "") +
+      (d ? `<span class="d-val">${v == null ? "–" : esc(cost ? fmtUsd(v) : fmtNum(v, 1))}</span>` : "");
+    if (!d) {
+      html += `<div class="${cls.join(" ")}">${body}</div>`;
+      continue;
+    }
+    const title = `${fmtDay(day, DAY_FMT)}: ${fmtNum(d.value)} ${unit}` +
+      (d.hasCost ? `, ${fmtUsd(d.cost)}` : "") + flags.map((f) => `\n${f.headline}`).join("");
+    const heat = v != null && full > 0 ? Math.min(1, Math.max(0, v / full)) : 0;
+    html += `<button type="button" class="${cls.join(" ")}" data-day="${day}" style="--h:${heat.toFixed(3)}"` +
+      ` aria-pressed="${day === state.selectedDay}" title="${esc(title)}">${body}</button>`;
   }
-  return out;
+  $("cal-grid").innerHTML = html;
+  $("cal-note").textContent = full > 0
+    ? `${cost ? "Cost" : unit} per day. Darker is heavier, darkest at ` +
+      `${cost ? fmtUsd(full, full < 10 ? 2 : 0) : `${fmtNum(full, 0)} ${unit}`} and up.`
+    : "";
 }
 
-function renderOverview() {
+$("cal-grid").addEventListener("click", (event) => {
+  const cell = event.target.closest("button[data-day]");
+  if (cell) selectDay(cell.dataset.day);
+});
+
+// ------------------------------------------------------------------ trend --
+// The cycle's running total as a line, projected to its closing day, against
+// the previous cycle's line. The x-axis runs to the cycle's end, so how far
+// in we are is a position.
+
+function renderTrend(win, facts) {
   const t = tokens();
-  const chart = makeChart("overview-chart");
-  const win = currentWin();
-  const daily = intervalFor("daily");
-  if (!win || !daily) return;
-  const metric = state.metric;
-  const valueFmt = metric === "cost" ? (x) => fmtUsd(x) : (x) => `${fmtNum(x)} ${daily.unit}`;
+  const chart = makeChart("trend-chart");
+  const unit = intervalFor("daily").unit;
+  const cost = state.metric === "cost";
+  const amount = (d) => (cost ? (d.hasCost ? d.cost : null) : d.value);
+  const fmtAmount = cost ? (x) => fmtUsd(x) : (x) => `${fmtNum(x)} ${unit}`;
 
-  const days = windowDays(win).map((d) => d.day);
-  // The in-progress day (newest data day inside the running cycle) renders
-  // dimmed so a short bar reads as partial, not an anomaly.
-  const newestDay = dayList().at(-1);
-  const partialDay =
-    win.current && newestDay && days[days.length - 1] === newestDay ? newestDay : null;
-  const { entries, split } = viewEntries("daily");
-  const stacked = split && state.view === "stacked";
+  const mine = windowDays(win);
+  const prev = cycleWindows()[state.cycleIdx + 1] || null;
+  const theirs = prev ? windowDays(prev) : [];
+  const prevLen = prev ? daysBetween(prev.start, prev.end) + 1 : 0;
+  // The previous cycle is only a fair reference when its days are all there.
+  const hasPrev = theirs.length > 0 && theirs.length >= prevLen - 1;
+  const ownLen = Math.max(facts ? facts.cycleLen : 0, daysBetween(win.start, win.end) + 1);
+  const n = Math.max(ownLen, hasPrev ? prevLen : 0);
+  const axis = Array.from({ length: n }, (_, i) => addDays(win.start, i));
 
-  // Per-entry day sums, so each series lines up on the same category axis.
-  const perDay = entries.map((entry) => {
-    const map = new Map();
-    const ys = metric === "cost" ? entry.costs : entry.values;
-    if (!ys) return null;
-    for (let i = 0; i < entry.starts.length; i++) {
-      if (ys[i] != null) {
-        const day = entry.starts[i].slice(0, 10);
-        map.set(day, (map.get(day) ?? 0) + ys[i]);
-      }
+  // Running totals by day-of-cycle.
+  const running = (days, start) => {
+    const out = new Array(n).fill(null);
+    let sum = 0;
+    for (const d of days) {
+      if (amount(d) == null) continue;
+      sum += amount(d);
+      out[daysBetween(start, d.day)] = round(sum, 1e3);
     }
-    return map;
-  });
-
-  const colors = [];
-  const series = entries
-    .map((entry, idx) => {
-      const map = perDay[idx];
-      if (!map) return null;
-      colors.push(slotColor(t, entry.name));
-      return {
-        name: entry.name,
-        type: "bar",
-        barMaxWidth: 22,
-        stack: stacked ? "components" : undefined,
-        itemStyle: { borderRadius: stacked ? 0 : [3, 3, 0, 0] },
-        data: days.map((day) => {
-          const v = map.has(day) ? Math.round(map.get(day) * 1e4) / 1e4 : null;
-          const style = {};
-          if (day === state.selectedDay) {
-            style.borderColor = t.textPrimary;
-            style.borderWidth = 1.5;
-          }
-          if (day === partialDay) style.opacity = 0.45;
-          return Object.keys(style).length ? { value: v, itemStyle: style } : v;
-        }),
-      };
-    })
-    .filter(Boolean);
-
-  // Flag pins float above the day's total bar.
-  const flagsByDay = overviewFlagsByDay();
-  const dayFacts = new Map(windowDays(win).map((d) => [d.day, d]));
-  const dayTotals = new Map(windowDays(win).map((d) =>
-    [d.day, metric === "cost" && d.hasCost ? d.cost : d.value]));
-  const pins = days
-    .filter((day) => flagsByDay.has(day))
-    .map((day) => ({
-      coord: [day, (dayTotals.get(day) ?? 0) * 1.02],
-      flagDate: flagsByDay.get(day).date,
-    }));
-  if (series.length && pins.length) {
-    series[0].markPoint = {
-      symbol: "circle", symbolSize: 1, silent: false,
-      label: { show: true, formatter: "⚑", fontSize: 13, color: t.series[3], offset: [0, -8] },
-      data: pins,
-    };
-  }
-
-  const opt = baseOption(t);
-  if (split) opt.color = colors;
-  opt.xAxis.type = "category";
-  opt.xAxis.data = days;
-  opt.xAxis.axisLabel.formatter = (v) => fmtDay(v, { day: "numeric" });
-  metricYAxis(opt, daily.unit);
-  opt.series = series;
-  opt.legend = legendFor(series, t);
-  opt.tooltip.formatter = (params) => {
-    if (!params.length) return "";
-    const day = params[0].axisValue;
-    const flag = flagsByDay.get(day);
-    const note = flag
-      ? `<div style="color:${t.series[3]};margin-top:3px">⚑ ${esc(flag.headline)}</div>` : "";
-    // The day's metered total, always with its cost alongside.
-    const d = dayFacts.get(day);
-    let total = "";
-    if (d) {
-      const usage = `${fmtNum(d.value)} ${daily.unit}`;
-      const both = !d.hasCost ? usage
-        : metric === "cost" ? `${fmtUsd(d.cost)} · ${usage}` : `${usage} · ${fmtUsd(d.cost)}`;
-      total = `<div style="margin-top:4px;padding-top:3px;border-top:1px solid ${t.gridline}">
-           <strong>${esc(both)}</strong>
-           <span style="opacity:.75">Total</span>
-         </div>`;
-    }
-    return `<div style="color:${t.textSecondary}">${esc(fmtDay(day, DAY_FMT))}` +
-      ` · click to inspect</div>` + tooltipRows(params, valueFmt) + total + note;
+    return out;
   };
-  chart.setOption(opt, REPLACE);
-  chart.off("click");
-  chart.on("click", (p) => {
-    if (p.componentType === "markPoint" && p.data?.flagDate) selectDay(p.data.flagDate);
-    else if (p.componentType === "series") selectDay(days[p.dataIndex]);
+  const cum = running(mine, win.start);
+  const ref = hasPrev ? running(theirs, prev.start) : null;
+  const tip = daysBetween(win.start, mine[mine.length - 1].day);
+  const projected = facts ? (cost ? facts.projCost : facts.projUsage) : null;
+  const endIdx = facts ? facts.cycleLen - 1 : tip;
+
+  const series = [];
+  const line = (id, data, color, extra) => series.push({
+    id, type: "line", data, connectNulls: true, showSymbol: false, silent: true,
+    lineStyle: { color, width: 2 }, itemStyle: { color }, ...extra,
+  });
+  const note = (i, value, text, extra) => ({
+    silent: true, symbol: "circle", symbolSize: 7,
+    data: [{ coord: [i, value] }],
+    label: { show: !!text, color: t.text2, fontSize: 12, formatter: () => text,
+             rich: { b: { color: t.ink, fontWeight: 600, fontSize: 12.5 } }, ...extra },
+  });
+  if (ref) {
+    const last = ref.findLastIndex((v) => v != null);
+    line("ref", ref, t.ref, {
+      lineStyle: { color: t.ref, width: 1.5 },
+      markPoint: {
+        ...note(last, ref[last], win.current ? "last cycle" : "cycle before",
+          // above its line's end, or below when this cycle's line runs over it
+          { position: "left", offset: [4, ref[last] >= (projected ?? cum[tip]) ? -11 : 20],
+            color: t.muted, fontSize: 11.5 }),
+        symbolSize: 0,
+      },
+    });
+  }
+  if (projected != null && endIdx > tip) {
+    const data = new Array(n).fill(null);
+    data[tip] = { value: cum[tip], symbol: "none" };
+    data[endIdx] = {
+      value: round(projected, 1e3), symbol: "circle", symbolSize: 7,
+      itemStyle: { color: t.page, borderColor: t.ink, borderWidth: 1.5 },
+    };
+    line("projection", data, t.ink, {
+      showSymbol: true,
+      lineStyle: { color: t.ink, width: 1.5, type: [3, 4], opacity: 0.6 },
+    });
+  }
+  // The tip of the running total carries the so-far figures.
+  const late = tip > n * 0.62;
+  line("pace", cum, t.ink, {
+    z: 3,
+    markPoint: {
+      ...note(tip, cum[tip], facts
+        ? `{b|${fmtNum(facts.usage, 0)} ${unit}${facts.cost != null ? ` · ${fmtUsd(facts.cost, 0)}` : ""}} so far` : "",
+        { position: late ? "left" : "right", offset: late ? [-2, -13] : [2, 13] }),
+      itemStyle: { color: t.ink, borderColor: t.page, borderWidth: 1.5 },
+    },
+    // The selected day, as a hairline.
+    markLine: axis.includes(state.selectedDay) ? {
+      silent: true, symbol: "none", label: { show: false },
+      lineStyle: { color: t.ruleStrong, width: 1, type: "solid" },
+      data: [{ xAxis: state.selectedDay }],
+    } : undefined,
   });
 
-  // Title and totals for the window.
-  const totals = windowDays(win);
-  const usage = totals.reduce((s, d) => s + d.value, 0);
-  const cost = totals.some((d) => d.hasCost) ? totals.reduce((s, d) => s + d.cost, 0) : null;
-  $("overview-title").textContent = win.label;
-  $("overview-sub").textContent =
-    `${fmtDay(win.start)} – ${fmtDay(win.end)} · ${fmtNum(usage, 0)} ${daily.unit}` +
-    (cost != null ? ` · ${fmtUsd(cost, 0)}` : "") +
-    (win.bill ? ` · billed ${fmtUsd(win.bill.total_amount_usd)}` : "");
+  chart.setOption({
+    ...chartBase(t),
+    grid: { left: 40, right: 12, top: 20, bottom: 24 },
+    xAxis: {
+      type: "category", data: axis, boundaryGap: false,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: t.ruleStrong } },
+      axisPointer: { label: { show: false }, lineStyle: { color: t.ruleStrong, type: "solid" } },
+      axisLabel: {
+        ...axisText(t),
+        interval: (i) => i % 7 === 0,
+        formatter: (day, i) => (i === 0 || +day.slice(8) <= 7 ? fmtDay(day) : String(+day.slice(8))),
+      },
+    },
+    yAxis: valueAxis(t, {
+      splitNumber: 3, name: cost ? "" : unit,
+      axisLabel: { ...axisText(t), formatter: cost ? moneyTick : undefined },
+    }),
+    series,
+    tooltip: {
+      ...chartBase(t).tooltip,
+      formatter: (params) => {
+        if (!params.length) return "";
+        const i = params[0].dataIndex;
+        return tipHead(t, `${fmtDay(axis[i], DAY_FMT)} · day ${i + 1}`) +
+          (cum[i] != null ? tipRow(t.ink, fmtAmount(cum[i]), "into this cycle") : "") +
+          (ref && ref[i] != null ? tipRow(t.ref, fmtAmount(ref[i]), "the cycle before, same day") : "");
+      },
+    },
+  }, REPLACE);
+}
 
+// The cycle in words: when it closes and how long is left, where the bill
+// lands (projected for the running cycle, billed for a finished one), and
+// how that compares with the cycle before.
+function renderReadout(win, facts, prev) {
+  const unit = intervalFor("daily").unit;
+  const long = { weekday: "short", month: "short", day: "numeric" };
+  const len = daysBetween(win.start, win.end) + 1;
+  $("cycle-title").textContent = win.current ? "This cycle" : `${fmtDay(win.start)} – ${fmtDay(win.end)}`;
+  $("cycle-sub").textContent = facts ? `${fmtDay(win.start)} – ${fmtDay(facts.endEst)}` : win.bill ? "billed" : "";
   const wins = cycleWindows();
   $("cycle-prev").disabled = state.cycleIdx >= wins.length - 1;
   $("cycle-next").disabled = state.cycleIdx <= 0;
-}
 
-// ----------------------------------------------------------- detail chart --
+  const due = facts && facts.daysLeft > 0;
+  $("closes").innerHTML = due ? `Closes about <b>${esc(fmtDay(facts.endEst, long))}</b>`
+    : facts ? "Due to close <b>any day now</b>"
+    : `Closed <b>${esc(fmtDay(win.end, { ...long, year: "numeric" }))}</b>`;
+  $("closes-sub").textContent = due
+    ? `${facts.daysLeft} ${facts.daysLeft === 1 ? "day" : "days"} left · day ${facts.elapsed} of about ${facts.cycleLen}`
+    : facts ? `day ${facts.elapsed} · cycles usually run about ${facts.cycleLen}`
+    : `${len} days`;
 
-function sliceDay(entry, day) {
-  const starts = [], values = [], costs = entry.costs ? [] : null;
-  for (let i = 0; i < entry.starts.length; i++) {
-    if (entry.starts[i].slice(0, 10) !== day) continue;
-    starts.push(entry.starts[i]);
-    values.push(entry.values[i]);
-    if (costs) costs.push(entry.costs[i]);
+  const big = $("land-big"), delta = $("land-delta"), refEl = $("land-ref");
+  let vs = null;
+  if (facts) {
+    big.innerHTML = facts.projCost != null
+      ? `~${esc(fmtUsd(facts.projCost, 0))}`
+      : `~${esc(fmtNum(facts.projUsage, 0))} <small>${esc(unit)}</small>`;
+    $("land-line").textContent = facts.projCost != null
+      ? `projected bill · ~${fmtNum(facts.projUsage, 0)} ${unit}` : "projected";
+    vs = facts.vsLastPct;
+  } else if (win.bill) {
+    const b = win.bill;
+    big.textContent = fmtUsd(b.total_amount_usd);
+    $("land-line").textContent = `billed · ${fmtNum(b.usage, 0)} ${b.unit}` +
+      (b.estimated ? " (estimated read)" : "") + ` · ${fmtUsd(b.total_amount_usd / b.usage)}/${b.unit}`;
+    if (prev && prev.bill) vs = ((b.usage - prev.bill.usage) / prev.bill.usage) * 100;
+  } else {
+    const metered = windowDays(win).reduce((sum, d) => sum + d.value, 0);
+    big.innerHTML = `${esc(fmtNum(metered, 0))} <small>${esc(unit)}</small>`;
+    $("land-line").textContent = "metered";
   }
-  return costs ? { ...entry, starts, values, costs } : { ...entry, starts, values };
+  const shown = vs != null && Number.isFinite(vs);
+  const which = win.current ? "last bill" : "the bill before";
+  delta.className = "land-delta " + (shown ? (vs > 0 ? "bad" : "good") : "");
+  delta.textContent = shown ? `${Math.abs(vs).toFixed(0)}% ${vs > 0 ? "over" : "under"} ${which}` : "";
+  refEl.hidden = !(prev && prev.bill);
+  if (prev && prev.bill) {
+    refEl.textContent = (shown ? "" : which + " ") +
+      `${fmtUsd(prev.bill.total_amount_usd)} · ${fmtNum(prev.bill.usage, 0)} ${prev.bill.unit}`;
+  }
 }
 
-// A "nice" axis bound at or beyond x, as { bound, step }: the tightest bound
-// that is three to six 1/2/2.5/5 × 10^k steps from zero.
-function niceBound(x) {
-  if (!(x > 0)) return { bound: 0, step: 0 };
-  const exp = Math.floor(Math.log10(x));
-  let best = null;
-  for (const pow of [10 ** (exp - 1), 10 ** exp]) {
-    for (const m of [1, 2, 2.5, 5]) {
-      const step = m * pow;
-      const n = Math.ceil(x / step - 1e-9);
-      if (n < 3 || n > 6) continue;
-      if (!best || n * step < best.bound - 1e-12) best = { bound: n * step, step };
+// ------------------------------------------------------------- device key --
+// The day chart's legend, and the split across known devices for the day on
+// show and for the whole cycle. Each known device is also its own toggle:
+// off folds it back into "Everything else".
+
+function renderKey() {
+  const key = $("device-key");
+  const win = currentWin();
+  const comps = componentEntries("daily");
+  key.hidden = !comps.length;
+  $("view-seg").hidden = !comps.length;
+  if (key.hidden) return;
+  const total = state.view === "total";
+  key.classList.toggle("total-only", total);
+  const shown = total ? comps : comps.filter((dev) => !state.folded.has(dev.name));
+  const cost = state.metric === "cost" && comps.some((dev) => dev.costs);
+  const rows = [remainderEntry("daily", shown), ...shown].filter(Boolean).map((entry) => {
+    const ys = (cost ? entry.costs : entry.values) || [];
+    let sum = 0, day = null;
+    for (let i = 0; i < entry.starts.length; i++) {
+      const at = entry.starts[i].slice(0, 10);
+      if (ys[i] == null) continue;
+      if (at >= win.start && at <= win.end) sum += ys[i];
+      if (at === state.selectedDay) day = ys[i];
     }
-  }
-  const round = (v) => Math.round(v * 1e9) / 1e9;
-  return { bound: round(best.bound), step: round(best.step) };
+    return { name: entry.name, sum, day };
+  }).sort((a, b) => b.sum - a.sum);
+  const all = rows.reduce((s, r) => s + r.sum, 0);
+  const folded = total ? [] : comps.filter((dev) => state.folded.has(dev.name));
+  const words = (x, big) => (x == null ? "–" : cost ? fmtUsd(x) : fmtNum(x, big && x >= 10 ? 0 : 1));
+
+  const row = (name, r) => {
+    const device = name !== "Everything else" && !total;
+    const cells =
+      `<span class="key-swatch" style="--c:${cssColor(name)}"></span>` +
+      `<span class="key-name">${esc(name)}</span>` +
+      (!r ? "<span></span><span></span><span></span>"
+        : `<span class="key-amt">${esc(words(r.day))}</span>` +
+          `<span class="key-cyc">${esc(words(r.sum, true))}</span>` +
+          `<span class="key-share">${all > 0 ? ((r.sum / all) * 100).toFixed(0) + "%" : ""}</span>`);
+    return device
+      ? `<li><button type="button" class="key-row${r ? "" : " folded"}" data-name="${esc(name)}"` +
+        ` aria-pressed="${!!r}" title="${r ? "Fold into Everything else" : "Break out"}">${cells}</button></li>`
+      : `<li><div class="key-row">${cells}</div></li>`;
+  };
+  $("key-list").innerHTML =
+    `<li><div class="key-row key-head"><span></span><span>${cost ? "cost" : esc(intervalFor("daily").unit)}</span>` +
+    `<span>${esc(fmtDay(state.selectedDay))}</span><span>cycle</span><span></span></div></li>` +
+    rows.map((r) => row(r.name, r)).join("") + folded.map((dev) => row(dev.name, null)).join("");
 }
 
-// The day chart's y range, fixed across the billing cycle on screen (for the
-// current resolution, measure, and breakdown) so paging between its days
-// compares heights honestly instead of each day rescaling to its own peak.
-function detailYExtent(entries, metric, stacked, win) {
-  let lo = 0, hi = 0;
-  const see = (v) => { if (v < lo) lo = v; else if (v > hi) hi = v; };
-  const inWin = (start) => {
-    const day = start.slice(0, 10);
-    return !win || (day >= win.start && day <= win.end);
+$("key-list").addEventListener("click", (event) => {
+  const btn = event.target.closest("button");
+  if (!btn) return;
+  const name = btn.dataset.name;
+  state.folded[state.folded.has(name) ? "delete" : "add"](name);
+  localStorage.setItem("folded", JSON.stringify([...state.folded]));
+  renderMain();
+});
+
+// -------------------------------------------------------------- day chart --
+
+// The day chart's y range. One range for the whole cycle keeps days
+// comparable but leaves a quiet day as a strip along the bottom (one space
+// heater sets the scale for a month). So the axis sits on a 1-2-5 ladder:
+// the rung that fits the cycle's typical daily peak is the usual scale, and a
+// day moves off it only as far as it must — up for a heavy day, down (two
+// rungs at most) for a quiet one. `zoom` says how far: 1 on the usual scale.
+const RUNGS = [1, 2, 5];
+const rungValue = (r) => RUNGS[((r % 3) + 3) % 3] * 10 ** Math.floor(r / 3);
+function rungFor(x) {
+  let r = Math.floor(Math.log10(x)) * 3;
+  while (rungValue(r) < x - 1e-12) r++;
+  return r;
+}
+
+function detailYExtent(entries, metric, stacked, win, day) {
+  const peaks = new Map();   // day -> its highest bucket (or stack)
+  let lo = 0;
+  const see = (start, v) => {
+    const at = start.slice(0, 10);
+    if (at !== day && (at < win.start || at > win.end)) return;
+    if (v > (peaks.get(at) ?? 0)) peaks.set(at, v);
+    if (at === day && v < lo) lo = v;
   };
   const sums = new Map();
   for (const entry of entries) {
     const ys = metric === "cost" ? entry.costs : entry.values;
     if (!ys) continue;
     for (let i = 0; i < ys.length; i++) {
-      if (ys[i] == null || !inWin(entry.starts[i])) continue;
+      if (ys[i] == null) continue;
       if (stacked) sums.set(entry.starts[i], (sums.get(entry.starts[i]) ?? 0) + ys[i]);
-      else see(ys[i]);
+      else see(entry.starts[i], ys[i]);
     }
   }
-  for (const v of sums.values()) see(v);
+  for (const [start, v] of sums) see(start, v);
+  const typical = median([...peaks.values()]);
+  if (!(typical > 0)) return null;
+  const usual = rungFor(typical);
+  const rung = Math.max(usual - 2, rungFor(peaks.get(day) || typical));
+  const max = rungValue(rung);
+  const interval = max / (RUNGS[((rung % 3) + 3) % 3] === 2 ? 4 : 5);
   // Slightly negative buckets are breakdown noise (device estimates
   // overshooting the meter), not worth a negative axis; real export is.
-  const top = niceBound(hi);
-  const min = lo < -0.1 * hi ? -Math.ceil(-lo / top.step) * top.step : 0;
-  return { min, max: top.bound, interval: top.step };
+  const min = lo < -0.1 * max ? -Math.ceil(-lo / interval) * interval : 0;
+  return { min: round(min, 1e9), max: round(max, 1e9), interval: round(interval, 1e9),
+           zoom: rungValue(usual) / max };
 }
 
-function renderDetail() {
+
+const clockLabel = (hhmm) => {
+  const h = +hhmm.slice(0, 2), m = hhmm.slice(3);
+  return `${h % 12 || 12}${m === "00" ? "" : ":" + m} ${h < 12 ? "AM" : "PM"}`;
+};
+
+// The selected day, slot by slot: a line per device (and one for everything
+// else), or the same split as stacked bars, or the meter's one line.
+function renderDay() {
   const res = detailRes();
-  const resSeg = $("res-seg");
-  resSeg.hidden = DETAIL_RESES.some((r) => !intervalFor(r));
-  syncSeg("res-seg", "res", res);
-  $("detail-card").hidden = !res;
-  if (!res) return;
-  const t = tokens();
-  const chart = makeChart("detail-chart");
-  const interval = intervalFor(res);
   const day = state.selectedDay;
-  if (!day) return;
-  const metric = state.metric;
-  const valueFmt = metric === "cost" ? (x) => fmtUsd(x, 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
+  $("res-seg").hidden = DETAIL_RESES.some((r) => !intervalFor(r));
+  syncTabs("res-seg", "res", res);
+  $("day-band").hidden = !res || !day;
+  if (!res || !day) return;
+  const t = tokens();
+  const chart = makeChart("day-chart");
+  const interval = intervalFor(res);
+  const cost = state.metric === "cost";
+  const valueFmt = cost ? (x) => fmtUsd(x, 3) : (x) => `${fmtNum(x)} ${interval.unit}`;
+
+  // Slots are wall-clock positions in the day, so a partial day keeps its
+  // empty remainder and every day shares one axis.
+  const step = res === "quarter_hour" ? 15 : 60;
+  const count = 1440 / step;
+  const slotOf = (start) => (+start.slice(11, 13) * 60 + +start.slice(14, 16)) / step;
+  const labels = Array.from({ length: count }, (_, i) =>
+    `${String(Math.floor((i * step) / 60)).padStart(2, "0")}:${String((i * step) % 60).padStart(2, "0")}`);
+  const slotted = (entry, ys) => {
+    const data = new Array(count).fill(null);
+    for (let i = 0; i < entry.starts.length; i++) {
+      if (ys[i] == null || !entry.starts[i].startsWith(day)) continue;
+      const k = slotOf(entry.starts[i]);
+      data[k] = round((data[k] ?? 0) + ys[i]);
+    }
+    return data;
+  };
 
   const { entries, split } = viewEntries(res);
-  const dayEntries = entries.map((e) => sliceDay(e, day)).filter((e) => e.starts.length);
-  const stacked = split && state.view === "stacked";
-
-  const colors = [];
-  const series = dayEntries
+  const bars = split && state.view === "stacked";
+  const series = entries
+    .filter((entry) => (cost ? entry.costs : entry.values))
     .map((entry) => {
-      const ys = metric === "cost" ? entry.costs : entry.values;
-      if (!ys) return null;
-      colors.push(slotColor(t, entry.name));
-      return {
-        name: entry.name,
-        type: "line",
-        showSymbol: false,
-        stack: stacked ? "components" : undefined,
-        areaStyle: stacked ? { opacity: 0.35 } : undefined,
-        lineStyle: { width: 2 },
-        symbolSize: 8,
-        data: entry.starts.map((s, i) => [new Date(s).getTime(), ys[i]]),
-      };
-    })
-    .filter(Boolean);
+      const color = seriesColor(t, entry.name);
+      const data = slotted(entry, cost ? entry.costs : entry.values);
+      return bars
+        ? { name: entry.name, type: "bar", stack: "day", data, barCategoryGap: "18%",
+            itemStyle: { color }, emphasis: { disabled: true } }
+        : { name: entry.name, type: "line", data, showSymbol: false,
+            lineStyle: { color, width: 2 }, itemStyle: { color },
+            emphasis: { disabled: true }, z: color === t.meter ? 2 : 3,
+            areaStyle: split ? undefined : { color, opacity: 0.08 } };
+    });
 
-  // An overnight-baseline flag covering this day shades its 1–5am window.
-  const overnight = (state.data.flags || []).find(
-    (f) => f.kind === "overnight_baseline" && f.date <= day && day <= f.end_date);
-  if (series.length && overnight) {
-    series[0].markArea = {
-      silent: true,
-      itemStyle: { color: t.series[3], opacity: 0.12 },
-      label: { show: true, position: "insideTop", color: t.muted, fontSize: 11,
-               formatter: "⚑ overnight load" },
-      data: [[{ xAxis: dayMs(day) + 3600e3 }, { xAxis: dayMs(day) + 5 * 3600e3 }]],
+  // The day's metered totals, for the header and the latest-read marker.
+  const usage = new Array(count).fill(null);
+  let costSum = null;
+  for (const entry of interval.series) {
+    slotted(entry, entry.values).forEach((v, k) => { if (v != null) usage[k] = (usage[k] ?? 0) + v; });
+    if (entry.costs) {
+      for (const v of slotted(entry, entry.costs)) if (v != null) costSum = (costSum ?? 0) + v;
+    }
+  }
+  const filled = usage.findLastIndex((v) => v != null) + 1;
+  if (series.length && filled && filled < count && day === dayList().at(-1)) {
+    series[0].markLine = {
+      silent: true, symbol: "none",
+      lineStyle: { color: t.ruleStrong, width: 1, type: "dashed" },
+      label: { formatter: "latest read", color: t.muted, fontSize: 10.5, position: "end", distance: 4 },
+      data: [{ xAxis: filled }],
     };
   }
 
-  // A subtle "now" line at the last data bucket when the newest day is up,
-  // keeping the full 24h frame so the empty remainder reads as "not yet".
-  if (series.length && day === dayList().at(-1)) {
-    let lastTs = null;
-    for (const entry of dayEntries) {
-      for (const s of entry.starts) {
-        const ts = new Date(s).getTime();
-        if (lastTs == null || ts > lastTs) lastTs = ts;
-      }
-    }
-    if (lastTs != null) {
-      series[0].markLine = {
-        silent: true,
-        symbol: "none",
-        lineStyle: { color: t.baseline, width: 1, type: "dashed" },
-        label: { show: true, formatter: "now", color: t.muted, fontSize: 10, position: "insideEndTop" },
-        data: [{ xAxis: lastTs }],
-      };
-    }
-  }
+  const extent = detailYExtent(entries, state.metric, bars, currentWin(), day);
+  const every = (chart.getWidth() < 560 ? 6 : 3) * (60 / step);
 
-  const opt = baseOption(t);
-  if (split) opt.color = colors;
-  opt.xAxis.type = "time";
-  opt.xAxis.min = dayMs(day);
-  opt.xAxis.max = dayMs(day) + 86400e3;
-  metricYAxis(opt, interval.unit);
-  // The selected day normally sits inside the overview's window; if not,
-  // fall back to the whole record.
-  const win = currentWin();
-  const extent = detailYExtent(entries, metric, stacked,
-    win && day >= win.start && day <= win.end ? win : null);
-  if (extent.max > extent.min) {
-    opt.yAxis.min = extent.min;
-    opt.yAxis.max = extent.max;
-    opt.yAxis.interval = extent.interval;
-  }
-  opt.series = series;
-  opt.legend = legendFor(series, t);
-  opt.tooltip.formatter = (params) => {
-    if (!params.length) return "";
-    const rows = params.filter((p) => p.value != null && p.value[1] != null);
-    const total = split && rows.length > 1
-      ? `<div style="margin-top:4px;padding-top:3px;border-top:1px solid ${t.gridline}">
-           <strong>${esc(valueFmt(rows.reduce((sum, p) => sum + p.value[1], 0)))}</strong>
-           <span style="opacity:.75">Total</span>
-         </div>`
-      : "";
-    return `<div style="color:${t.textSecondary}">${esc(fmtStamp(params[0].value[0], res))}</div>` +
-      tooltipRows(params, valueFmt) + total;
-  };
-  chart.setOption(opt, REPLACE);
+  chart.setOption({
+    ...chartBase(t),
+    grid: { left: PLOT.left, right: PLOT.right, top: 26, bottom: 30 },
+    xAxis: {
+      type: "category", data: labels,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: t.ruleStrong } },
+      axisLabel: { ...axisText(t), interval: (i) => i % every === 0, formatter: clockLabel },
+      axisPointer: bars ? { type: "shadow", shadowStyle: { color: t.tint } }
+        : { type: "line", lineStyle: { color: t.ruleStrong, type: "solid" } },
+    },
+    yAxis: valueAxis(t, {
+      ...(extent ? { min: extent.min, max: extent.max, interval: extent.interval } : {}),
+      name: cost ? "" : interval.unit,
+      axisLabel: { ...axisText(t), formatter: cost ? moneyTick : undefined },
+    }),
+    series,
+    tooltip: {
+      ...chartBase(t).tooltip,
+      formatter: (params) => {
+        const rows = params.filter((p) => p.value != null);
+        if (!rows.length) return "";
+        const total = rows.reduce((sum, p) => sum + p.value, 0);
+        return tipHead(t, clockLabel(params[0].axisValue)) +
+          (split ? `<div><strong>${esc(valueFmt(total))}</strong></div>` : "") +
+          rows.reverse().map((p) => tipRow(p.color, valueFmt(p.value), p.seriesName)).join("");
+      },
+    },
+  }, REPLACE);
 
-  // Title: the day; sub: its totals and peak moment at this resolution.
-  $("detail-title").textContent = fmtDay(day, DAY_FMT);
-  const buckets = new Map();
-  let usage = 0, cost = 0, hasCost = false;
-  for (const entry of interval.series) {
-    for (let i = 0; i < entry.starts.length; i++) {
-      if (entry.starts[i].slice(0, 10) !== day || entry.values[i] == null) continue;
-      usage += entry.values[i];
-      buckets.set(entry.starts[i], (buckets.get(entry.starts[i]) ?? 0) + entry.values[i]);
-      if (entry.costs && entry.costs[i] != null) { cost += entry.costs[i]; hasCost = true; }
-    }
-  }
-  if (!buckets.size) {
-    $("detail-sub").textContent = "no fine-grained data for this day";
+  $("day-title").textContent = fmtDay(day, { weekday: "long", month: "long", day: "numeric" });
+  // The day's reading, in words beside its title; and a note whenever the
+  // axis is off the cycle's usual scale, so heights aren't misread.
+  if (!filled) {
+    $("day-read").textContent = "No fine-grained reads for this day.";
   } else {
-    let peak = null;
-    for (const [s, v] of buckets) if (!peak || v > peak[1]) peak = [s, v];
-    const resLabel = res === "quarter_hour" ? "15-minute" : "hourly";
-    $("detail-sub").textContent =
-      `${resLabel} · ${fmtNum(usage)} ${interval.unit}` +
-      (hasCost ? ` · ${fmtUsd(cost)}` : "") +
-      ` · peak ${new Date(peak[0]).toLocaleString("en-US", { hour: "numeric", minute: "2-digit" })}`;
+    const peak = usage.indexOf(Math.max(...usage.filter((v) => v != null)));
+    const zoom = extent ? extent.zoom : 1;
+    $("day-read").textContent = [
+      `${fmtNum(usage.reduce((s, v) => s + (v ?? 0), 0))} ${interval.unit}`,
+      costSum != null ? fmtUsd(costSum) : "",
+      `peak at ${clockLabel(labels[peak])}`,
+      filled < count ? `read to ${clockLabel(labels[filled] ?? "24:00")}` : "",
+      zoom > 1 ? `quiet day: axis zoomed in ${round(zoom, 10)}×`
+        : zoom < 1 ? `heavy day: axis zoomed out ${round(1 / zoom, 10)}×` : "",
+    ].filter(Boolean).join(" · ");
   }
-
   const all = dayList();
   $("day-prev").disabled = all.indexOf(day) <= 0;
   $("day-next").disabled = all.indexOf(day) >= all.length - 1;
 }
 
-// --------------------------------------------------------------- side rail --
+// ------------------------------------------------------------------ flags --
+// Usually there are none, and then there is nothing here. Each flag is a
+// footnote to the calendar, worded by the server, in the red that marks its
+// days on the grid; clicking one opens the day it starts on.
 
-function renderCycleCard() {
-  const win = currentWin();
-  const rows = $("cycle-rows");
-  rows.textContent = "";
-  $("cycle-progress-track").hidden = true;
-  $("cycle-progress-label").hidden = true;
-  if (!win) {
-    $("cycle-big").textContent = "–";
-    $("cycle-sub").textContent = "";
-    return;
-  }
-  const unit = intervalFor("daily")?.unit || "kWh";
-  const row = (label, value, cls) => rows.insertAdjacentHTML("beforeend",
-    `<div><dt>${esc(label)}</dt><dd${cls ? ` class="${cls}"` : ""}>${value}</dd></div>`);
-
-  if (win.current) {
-    const f = cycleFacts();
-    if (!f) return;
-    $("cycle-label").textContent = "Billing cycle";
-    $("cycle-big").innerHTML = f.projCost != null
-      ? `~${esc(fmtUsd(f.projCost, 0))}`
-      : `~${esc(fmtNum(f.projUsage, 0))} <small>${esc(unit)}</small>`;
-    $("cycle-sub").textContent = "projected";
-    $("cycle-progress-track").hidden = false;
-    $("cycle-progress").style.width =
-      Math.min(100, (f.elapsed / f.cycleLen) * 100).toFixed(1) + "%";
-    const progressLabel = $("cycle-progress-label");
-    progressLabel.hidden = false;
-    progressLabel.textContent = `${f.elapsed} of ~${f.cycleLen} days`;
-    row("So far", `${fmtNum(f.usage, 0)} <small>${esc(unit)}</small>` +
-      (f.cost != null ? ` · ${esc(fmtUsd(f.cost, 0))}` : ""));
-    row("Days left", `~${f.daysLeft} <small>ends ~${esc(fmtDay(f.endEst))}</small>`);
-    if (f.projUsage != null)
-      row("Projected", `${fmtNum(f.projUsage, 0)} <small>${esc(unit)}</small>`);
-    if (f.vsLastPct != null && Number.isFinite(f.vsLastPct)) {
-      const over = f.vsLastPct > 0;
-      row("vs last cycle",
-        `${over ? "▲" : "▼"} ${Math.abs(f.vsLastPct).toFixed(0)}%`,
-        over ? "bad" : "good");
-    }
-    const kw = alwaysOnEstimate();
-    if (kw) row("Always-on", `${fmtNum(kw * 1000, 0)} <small>W</small>`);
-  } else {
-    // A past window: billed actuals.
-    const days = windowDays(win);
-    const usage = days.reduce((s, d) => s + d.value, 0);
-    $("cycle-label").textContent = win.bill ? "Billed cycle" : "Month";
-    $("cycle-big").innerHTML = win.bill
-      ? esc(fmtUsd(win.bill.total_amount_usd))
-      : `${esc(fmtNum(usage, 0))} <small>${esc(unit)}</small>`;
-    $("cycle-sub").textContent = `${fmtDay(win.start)} – ${fmtDay(win.end)}`;
-    if (win.bill) {
-      row("Billed usage", `${fmtNum(win.bill.usage, 0)} <small>${esc(win.bill.unit)}</small>`);
-      row("Effective rate", `${fmtUsd(win.bill.total_amount_usd / win.bill.usage, 2)}<small>/${esc(win.bill.unit)}</small>`);
-      if (win.bill.estimated) row("Meter read", "estimated");
-    }
-    row("Metered", `${fmtNum(usage, 0)} <small>${esc(unit)}</small>`);
-  }
+function renderFlags() {
+  $("flags-list").innerHTML = (state.data.flags || []).map((flag, i) =>
+    `<li><button type="button" data-i="${i}">` +
+    `<span class="flag-head">${esc(flag.headline)}</span>` +
+    (flag.value ? `<span class="flag-value">${esc(flag.value)}</span>` : "") +
+    (flag.detail ? `<span class="flag-detail">${esc(flag.detail)}</span>` : "") +
+    `</button></li>`).join("");
 }
 
-function renderDevicesCard() {
-  const card = $("devices-card");
-  const win = currentWin();
-  const comps = componentEntries("daily");
-  card.hidden = !win || !comps.length;
-  if (card.hidden) return;
-  const t = tokens();
-  const entries = [remainderEntry("daily", comps), ...comps].filter(Boolean);
-  const rows = entries
-    .map((entry) => {
-      let value = 0, cost = 0, hasCost = false, any = false;
-      for (let i = 0; i < entry.starts.length; i++) {
-        const day = entry.starts[i].slice(0, 10);
-        if (day < win.start || day > win.end || entry.values[i] == null) continue;
-        any = true;
-        value += entry.values[i];
-        if (entry.costs && entry.costs[i] != null) { cost += entry.costs[i]; hasCost = true; }
-      }
-      return any ? { name: entry.name, value, cost: hasCost ? cost : null } : null;
-    })
-    .filter(Boolean);
-  if (!rows.length) { card.hidden = true; return; }
-  const hasCost = rows.some((r) => r.cost != null);
-  const amount = (r) => (hasCost ? r.cost : r.value) ?? 0;
-  rows.sort((a, b) => amount(b) - amount(a));
-  const total = rows.reduce((s, r) => s + amount(r), 0);
-  const unit = intervalFor("daily")?.unit || "kWh";
-
-  $("devices-label").textContent =
-    (hasCost ? "Cost by device · " : "Usage by device · ") + (win.current ? "this cycle" : "this window");
-  $("devices-list").innerHTML = rows.map((r) =>
-    `<li><span class="bk-dot" style="background:${slotColor(t, r.name)}"></span>` +
-    `<span class="bk-name">${esc(r.name)}</span>` +
-    `<span class="bk-share">${total > 0 ? `${((amount(r) / total) * 100).toFixed(0)}%` : ""}</span>` +
-    `<span class="bk-value">${esc(hasCost ? fmtUsd(r.cost) : `${fmtNum(r.value)} ${unit}`)}</span></li>`,
-  ).join("");
-}
-
-// Flags: the date left and the measured reading right, with the comparison
-// underneath; clicking puts the flagged day under the microscope. Long
-// lists collapse to the newest five behind a "Show all" button.
-const MAX_VISIBLE_FLAGS = 5;
-let flagsExpanded = false;
-
-function renderFlagsCard() {
-  const flags = state.data.flags || [];
-  const card = $("flags-card");
-  card.hidden = !flags.length;
-  if (!flags.length) return;
-  const list = $("flags-list");
-  list.textContent = "";
-  const shown = flagsExpanded ? flags : flags.slice(0, MAX_VISIBLE_FLAGS);
-  for (const flag of shown) {
-    const overnight = flag.kind === "overnight_baseline";
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.title = flag.headline;
-
-    const span = flag.end_date && flag.end_date !== flag.date;
-    const endFmt = span && flag.end_date.slice(0, 7) === flag.date.slice(0, 7)
-      ? { day: "numeric" } : undefined;
-    const when = span ? `${fmtDay(flag.date)}–${fmtDay(flag.end_date, endFmt)}` : fmtDay(flag.date);
-    // Title: when (with the weekday for a single day); right: what the meter
-    // read; second line: what that's being compared against.
-    const title = span ? when : fmtDay(flag.date, { weekday: "short", month: "short", day: "numeric" });
-    let value, detail;
-    if (overnight) {
-      value = `${fmtNum(flag.watts, 0)} W`;
-      detail = "overnight floor" +
-        (flag.typical_watts ? ` · typically ~${fmtNum(Math.round(flag.typical_watts / 10) * 10, 0)} W` : "");
-    } else {
-      value = `${fmtNum(flag.kwh, 1)} kWh`;
-      detail = flag.typical_kwh
-        ? `${(flag.kwh / flag.typical_kwh).toFixed(1)}× a typical ` +
-          fmtDay(flag.date, { weekday: "long" })
-        : "";
-    }
-    btn.innerHTML =
-      `<span class="flag-line"><span class="flag-icon${overnight ? " overnight" : ""}">${overnight ? "●" : "⚑"}</span>` +
-      `<span class="flag-head">${esc(title)}</span>` +
-      `<span class="flag-value">${esc(value)}</span></span>` +
-      (detail ? `<span class="flag-detail">${esc(detail)}</span>` : "");
-    btn.addEventListener("click", () => {
-      selectDay(flag.date);
-      $("detail-card").scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-    li.append(btn);
-    list.append(li);
-  }
-  const more = $("flags-more");
-  more.hidden = flagsExpanded || flags.length <= MAX_VISIBLE_FLAGS;
-  more.textContent = `Show all ${flags.length}`;
-}
-
-$("flags-more").addEventListener("click", () => {
-  flagsExpanded = true;
-  renderFlagsCard();
+$("flags-list").addEventListener("click", (event) => {
+  const btn = event.target.closest("button");
+  if (!btn) return;
+  selectDay(state.data.flags[btn.dataset.i].date);
+  $("day-band").scrollIntoView({ behavior: "smooth", block: "nearest" });
 });
 
 // --------------------------------------------------------------- selection --
 
 function renderMain() {
-  renderTagline();
-  renderOverview();
-  renderDetail();
-  renderCycleCard();
-  renderDevicesCard();
-  renderFlagsCard();
-  if (!$("overview-table").hidden) fillTable("overview");
-  if (!$("detail-table").hidden) fillTable("detail");
+  const win = state.data && currentWin();
+  $("cycle").hidden = !win;
+  if (!win) { $("day-band").hidden = true; return; }
+  const facts = win.current ? cycleFacts() : null;
+  renderCalendar(win, facts);
+  renderReadout(win, facts, cycleWindows()[state.cycleIdx + 1] || null);
+  renderTrend(win, facts);
+  renderDay();
+  renderKey();
+  renderFlags();
+  for (const name of ["cycle", "day"]) if (!$(name + "-table").hidden) fillTable(name);
 }
 
-// Put a day under the microscope, paging the overview to the cycle that
-// contains it.
+// Open a day, paging the calendar to the cycle that contains it.
 function selectDay(day) {
   if (!dayList().includes(day)) return;
   state.selectedDay = day;
@@ -1020,73 +1015,63 @@ document.addEventListener("keydown", (event) => {
   else if (event.key === "ArrowRight") shiftDay(1);
 });
 
-// --------------------------------------------------- monthly + bills charts --
+// ---------------------------------------------------------------- history --
+// One bar per bill, in the measure on show, each with its value written on
+// it. A bill opens its cycle on the calendar when the reads go back that far.
 
-function monthLabel(iso) {
-  return new Date(iso + "T12:00:00").toLocaleString("en-US", { month: "short", year: "2-digit" });
-}
-
-function groupBy(rows, key) {
-  const out = new Map();
-  for (const row of rows) {
-    const k = row[key];
-    if (!out.has(k)) out.set(k, []);
-    out.get(k).push(row);
-  }
-  return out;
-}
-
-function renderCategoryBars(id, rows, groupKey, xKey, yKey, valueFmt, yName) {
-  const t = tokens();
-  const chart = makeChart(id);
-  const cats = [...new Set(rows.map((r) => r[xKey]))].sort();
-  const groups = groupBy(rows, groupKey);
-  const series = [...groups.entries()].map(([name, rws]) => {
-    const byX = new Map(rws.map((r) => [r[xKey], r]));
-    return {
-      name: String(name), type: "bar", barMaxWidth: 24,
-      itemStyle: { borderRadius: [4, 4, 0, 0] },
-      data: cats.map((c) => [c, byX.has(c) ? byX.get(c)[yKey] : null]),
-    };
-  });
-  const opt = baseOption(t);
-  opt.xAxis.type = "category";
-  opt.xAxis.data = cats;
-  opt.xAxis.axisLabel.formatter = (v) => monthLabel(v);
-  opt.yAxis.name = yName;
-  opt.series = series;
-  opt.legend = legendFor(series, t);
-  opt.grid.bottom = 36;
-  opt.tooltip.formatter = (params) => {
-    if (!params.length) return "";
-    const period = new Date(params[0].axisValue + "T12:00:00")
-      .toLocaleString("en-US", { month: "long", day: "numeric", year: "numeric" });
-    return `<div style="color:${t.textSecondary}">Period ending ${esc(period)}</div>` +
-      tooltipRows(params, valueFmt);
-  };
-  chart.setOption(opt, REPLACE);
-  chart.resize();
-}
+const monthLabel = (iso) => `${fmtDay(iso, { month: "short" })} ’${iso.slice(2, 4)}`;
 
 function renderHistory() {
-  const monthly = state.data.monthly;
-  const hasMonthly = Array.isArray(monthly) && monthly.length > 0;
-  $("monthly-usage-card").hidden = !hasMonthly;
-  $("monthly-charge-card").hidden = !hasMonthly;
-  if (hasMonthly) {
-    const unit = monthly[0].unit || "";
-    renderCategoryBars("monthly-usage-chart", monthly, "meter", "period_end", "usage",
-      (x) => `${fmtNum(x)} ${unit}`, `Usage (${unit})`);
-    renderCategoryBars("monthly-charge-chart", monthly, "meter", "period_end", "charge_usd",
-      (x) => fmtUsd(x), "Charges ($)");
-  }
-  const bills = state.data.bills;
-  const hasBills = Array.isArray(bills) && bills.length > 0;
-  $("bills-card").hidden = !hasBills;
-  if (hasBills) {
-    renderCategoryBars("bills-chart", bills, "service_type", "period_end", "total_amount_usd",
-      (x) => fmtUsd(x), "Total bill ($)");
-  }
+  const bills = state.data.bills || [];
+  const t = tokens();
+  const chart = makeChart("bills-chart");
+  const cost = state.metric === "cost";
+  const words = (b, digits) => (cost ? fmtUsd(b.total_amount_usd, digits) : `${fmtNum(b.usage, digits)} ${b.unit}`);
+  const periods = [...new Set(bills.map((b) => b.period_end))].sort();
+  const services = [...new Set(bills.map((b) => b.service_type))];
+  const series = services.map((name, s) => {
+    const mine = new Map(bills.filter((b) => b.service_type === name).map((b) => [b.period_end, b]));
+    return {
+      name, type: "bar", barMaxWidth: 30, emphasis: { disabled: true },
+      itemStyle: { color: services.length > 1 ? t.devices[s % t.devices.length] : t.meter },
+      label: { show: true, position: "top", color: t.text2, fontSize: 11,
+               formatter: (p) => (p.data && p.data.bill ? words(p.data.bill, 0) : "") },
+      data: periods.map((p) => {
+        const bill = mine.get(p);
+        return bill ? { value: cost ? bill.total_amount_usd : bill.usage, bill } : null;
+      }),
+    };
+  });
+  chart.setOption({
+    ...chartBase(t),
+    grid: { left: 12, right: 12, top: services.length > 1 ? 46 : 24, bottom: 24 },
+    legend: services.length > 1 ? { top: 0, left: 0, textStyle: { color: t.text2 } } : { show: false },
+    xAxis: {
+      type: "category", data: periods,
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: t.ruleStrong } },
+      axisLabel: { ...axisText(t), formatter: monthLabel },
+      axisPointer: { type: "shadow", shadowStyle: { color: t.tint } },
+    },
+    yAxis: { type: "value", show: false },
+    series,
+    tooltip: {
+      ...chartBase(t).tooltip,
+      formatter: (params) => params.filter((p) => p.data && p.data.bill).map(({ data: { bill }, color }) =>
+        tipHead(t, `${bill.service_type} · ${fmtDay(bill.period_start)} – ${fmtDay(addDays(bill.period_end, -1), { month: "short", day: "numeric", year: "numeric" })}`) +
+        tipRow(services.length > 1 ? color : "", fmtUsd(bill.total_amount_usd),
+          `${fmtNum(bill.usage, 0)} ${bill.unit}${bill.estimated ? " · estimated read" : ""}`)).join(""),
+    },
+  }, REPLACE);
+  chart.resize();
+  chart.getZr().off("click");
+  chart.getZr().on("click", (event) => {   // anywhere in a bill's column
+    const period = periods[chart.convertFromPixel({ xAxisIndex: 0 }, event.offsetX)];
+    const idx = cycleWindows().findIndex((w) => w.bill && w.bill.period_end === period);
+    if (idx < 0) return;
+    shiftCycle(idx - state.cycleIdx);
+    $("cycle").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
 }
 
 // History charts are only drawn while visible — echarts can't size a chart
@@ -1095,6 +1080,7 @@ $("history-btn").addEventListener("click", () => {
   const section = $("history");
   section.hidden = !section.hidden;
   $("history-btn").classList.toggle("active", !section.hidden);
+  $("history-btn").setAttribute("aria-expanded", String(!section.hidden));
   if (!section.hidden) {
     renderHistory();
     section.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1103,32 +1089,44 @@ $("history-btn").addEventListener("click", () => {
 
 // ------------------------------------------------------------- table views --
 
-function buildTable(container, columns, rows) {
-  const cell = (row, col) => esc(col.fmt ? col.fmt(row[col.key]) : row[col.key] ?? "–");
+// `rowKey` names a column whose value identifies the row, making rows
+// clickable; `selected` marks the row with that key.
+function buildTable(container, columns, rows, rowKey, selected) {
+  const cell = (row, col) => {
+    const v = row[col.key];
+    return `<td${typeof v === "number" ? ' class="num"' : ""}>${esc(col.fmt ? col.fmt(v) : v ?? "–")}</td>`;
+  };
+  const attrs = (row) => (rowKey
+    ? ` data-key="${esc(row[rowKey])}"${row[rowKey] === selected ? ' class="on"' : ""}` : "");
   container.innerHTML =
-    `<table><thead><tr>${columns.map((c) => `<th>${esc(c.label)}</th>`).join("")}</tr></thead>` +
+    `<table><thead><tr>${columns.map((c) =>
+      `<th${rows.length && typeof rows[0][c.key] === "number" ? ' class="num"' : ""}>${esc(c.label)}</th>`).join("")}</tr></thead>` +
     `<tbody>${rows.map((r) =>
-      `<tr>${columns.map((c) => `<td>${cell(r, c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+      `<tr${attrs(r)}>${columns.map((c) => cell(r, c)).join("")}</tr>`).join("")}</tbody></table>`;
 }
 
 function fillTable(name) {
-  if (name === "overview") {
+  if (name === "cycle") {
     const win = currentWin();
     const unit = intervalFor("daily")?.unit ?? "";
     if (!win) return;
-    buildTable($("overview-table"), [
+    let running = 0;
+    buildTable($("cycle-table"), [
       { key: "day", label: "Day", fmt: (v) => fmtDay(v, DAY_FMT) },
       { key: "value", label: `Usage (${unit})`, fmt: (v) => fmtNum(v, 2) },
       { key: "cost", label: "Cost ($)", fmt: (v) => fmtNum(v, 2) },
-    ], windowDays(win).map((d) => ({ day: d.day, value: d.value, cost: d.hasCost ? d.cost : null })));
-  } else if (name === "detail") {
+      { key: "running", label: `Running total (${unit})`, fmt: (v) => fmtNum(v, 1) },
+    ], windowDays(win).map((d) => ({
+      day: d.day, value: d.value, cost: d.hasCost ? d.cost : null, running: (running += d.value),
+    })), "day", state.selectedDay);
+  } else if (name === "day") {
     const res = detailRes();
     const interval = res && intervalFor(res);
     if (!interval || !state.selectedDay) return;
     const rows = [];
     for (const entry of interval.series) {
       for (let i = 0; i < entry.starts.length; i++) {
-        if (entry.starts[i].slice(0, 10) !== state.selectedDay) continue;
+        if (!entry.starts[i].startsWith(state.selectedDay)) continue;
         rows.push({
           start: entry.starts[i], stream: entry.name,
           value: entry.values[i],
@@ -1137,15 +1135,15 @@ function fillTable(name) {
       }
     }
     rows.sort((a, b) => (a.start < b.start ? -1 : 1));
-    buildTable($("detail-table"), [
+    buildTable($("day-table"), [
       { key: "start", label: "Start", fmt: (v) => fmtStamp(new Date(v).getTime(), res) },
       { key: "stream", label: "Series" },
       { key: "value", label: `Usage (${interval.unit})`, fmt: (v) => fmtNum(v, 3) },
       { key: "cost", label: "Cost ($)", fmt: (v) => fmtNum(v, 3) },
     ], rows);
-  } else if (name === "monthly-usage" || name === "monthly-charge") {
+  } else if (name === "monthly") {
     const monthly = state.data.monthly || [];
-    buildTable($(name + "-table"), [
+    buildTable($("monthly-table"), [
       { key: "period_end", label: "Period end" },
       { key: "meter", label: "Meter" },
       { key: "days", label: "Days" },
@@ -1167,90 +1165,52 @@ function fillTable(name) {
   }
 }
 
+// A table takes its chart's place; in the cycle table a row selects its day.
 document.querySelectorAll(".table-toggle").forEach((btn) => {
   btn.addEventListener("click", () => {
-    const name = btn.dataset.for;
-    const wrap = $(name + "-table");
-    const showing = !wrap.hidden;
-    wrap.hidden = showing;
-    btn.textContent = showing ? "Table" : "Chart view";
-    if (!showing) fillTable(name);
+    const wrap = $(btn.dataset.for + "-table");
+    wrap.hidden = !wrap.hidden;
+    wrap.parentElement.classList.toggle("as-table", !wrap.hidden);
+    if (wrap.previousElementSibling) btn.textContent = wrap.hidden ? "Table" : "Chart";
+    else btn.classList.toggle("active", !wrap.hidden);   // a table with no chart to replace
+    if (!wrap.hidden) fillTable(btn.dataset.for);
+    else {
+      Object.values(charts).forEach((c) => c.resize());
+      renderAll();
+    }
   });
 });
+$("cycle-table").addEventListener("click", (event) => {
+  const row = event.target.closest("tr[data-key]");
+  if (row) selectDay(row.dataset.key);
+});
 
-// ---------------------------------------------------------------- filters --
+// --------------------------------------------------------------- controls --
 
-function wireSeg(id, attr, onPick) {
+function wireTabs(id, attr, onPick) {
   $(id).addEventListener("click", (event) => {
     const btn = event.target.closest("button");
     if (!btn) return;
-    $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === btn));
+    syncTabs(id, attr, btn.dataset[attr]);
     onPick(btn.dataset[attr]);
   });
 }
 
-function syncSeg(id, attr, value) {
+function syncTabs(id, attr, value) {
   $(id).querySelectorAll("button").forEach((b) =>
     b.classList.toggle("active", b.dataset[attr] === String(value)));
 }
 
-wireSeg("metric-seg", "metric", (value) => {
-  localStorage.setItem("metric", value);
-  state.metric = value;
-  renderMain();
-});
-// Total mode folds every device in, so the chips go inert until it's left.
-function syncChipState() {
-  $("device-chips").classList.toggle("off", state.view === "total");
-}
-
-wireSeg("view-seg", "view", (value) => {
-  localStorage.setItem("view", value);
-  state.view = value;
-  syncChipState();
-  renderOverview();
-  renderDetail();
-});
-
-wireSeg("res-seg", "res", (value) => {
-  localStorage.setItem("detailRes", value);
-  state.detailRes = value;
-  renderDetail();
-  if (!$("detail-table").hidden) fillTable("detail");
-});
-
-syncSeg("metric-seg", "metric", state.metric);
-syncSeg("view-seg", "view", state.view);
-
-// One chip per known device (devices/*.json); active = broken out as its own
-// series, inactive = folded into "Everything else". Toggling one never
-// changes a total, only how the meter is sliced.
-function renderDeviceChips() {
-  const names = deviceNames();
-  const root = $("device-chips");
-  root.textContent = "";
-  root.hidden = !names.length;
-  $("view-seg").hidden = !names.length;
-  syncChipState();
-  for (const name of names) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    // Same palette slot as the device's series, so chip and legend match.
-    btn.innerHTML =
-      `<span class="chip-dot" style="background:var(--series-${(paletteSlot(name) % 4) + 1})"></span>` +
-      `<span>${esc(name)}</span>`;
-    btn.title = `Break ${name} out of "Everything else"`;
-    btn.classList.toggle("active", !state.folded.has(name));
-    btn.addEventListener("click", () => {
-      state.folded[state.folded.has(name) ? "delete" : "add"](name);
-      localStorage.setItem("folded", JSON.stringify([...state.folded]));
-      btn.classList.toggle("active", !state.folded.has(name));
-      renderOverview();
-      renderDetail();
-    });
-    root.append(btn);
-  }
-}
+const pick = (key, field) => (value) => {
+  localStorage.setItem(key, value);
+  state[field] = value;
+  renderAll();
+};
+wireTabs("metric-seg", "metric", pick("metric", "metric"));
+wireTabs("view-seg", "view", pick("dayView", "view"));
+wireTabs("res-seg", "res", pick("detailRes", "detailRes"));
+syncTabs("metric-seg", "metric", state.metric);
+syncTabs("view-seg", "view", state.view);
 
 // ------------------------------------------------------------ data + jobs --
 
@@ -1264,13 +1224,9 @@ async function loadData() {
   state.data = await getJson("/api/data");
   $("empty-note").hidden =
     state.data.intervals && Object.keys(state.data.intervals).length > 0;
-  if (state.data.last_read) {
-    const through = new Date(state.data.last_read);
-    $("data-through").textContent =
-      "Data through " + through.toLocaleString("en-US", TIME_FMT);
-  } else {
-    $("data-through").textContent = "";
-  }
+  $("data-through").textContent = state.data.last_read
+    ? "Read through " + new Date(state.data.last_read).toLocaleString("en-US", TIME_FMT)
+    : "";
   checkFreshness();
   // Cost toggle only makes sense when a cost series exists.
   const anyCost = Object.values(state.data.intervals || {})
@@ -1278,16 +1234,18 @@ async function loadData() {
   $("metric-seg").hidden = !anyCost;
   if (!anyCost && state.metric === "cost") {
     state.metric = "usage";
-    syncSeg("metric-seg", "metric", "usage");
+    syncTabs("metric-seg", "metric", "usage");
   }
-  // Default microscope target: the newest day (also after an update that
-  // brought in newer days while the previous newest was selected).
+  // Default day: the newest (also after an update that brought in newer days
+  // while the previous newest was selected).
   const all = dayList();
   if (all.length && (!state.selectedDay || !all.includes(state.selectedDay))) {
     state.selectedDay = all[all.length - 1];
     state.cycleIdx = 0;
   }
-  renderDeviceChips();
+  const kw = alwaysOnEstimate();
+  $("always-on").textContent = kw
+    ? `Always-on load is about ${fmtNum(kw * 1000, 0)} W (the lowest hours of the past week).` : "";
   renderAll();
 }
 

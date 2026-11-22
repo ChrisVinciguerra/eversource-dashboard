@@ -200,7 +200,6 @@ def build_payload() -> Json:
 
     intervals: Json = {}
     rates: dict[str, dict[str, float] | None] = {}
-    last_read: str | None = None
     for name in INTERVAL_DATASETS:
         frame = data.get(name)
         if frame is None:
@@ -219,9 +218,6 @@ def build_payload() -> Json:
             overlaps = overlap_entries(devices, starts, name, rate_by_day, cutoff)
             if overlaps:
                 intervals[name]["overlaps"] = overlaps
-        # Finest dataset wins (the loop is coarsest-first): a partial day's
-        # daily bucket "ends" at the next midnight, past the actual reads.
-        last_read = frame["end"].max() or last_read
 
     # Flags from the finest sub-daily kWh reads (device-free: both detectors
     # compare the metered total against its own history), costed at the same
@@ -238,7 +234,7 @@ def build_payload() -> Json:
         "flags": flags,
         "monthly": _records(data.get("monthly")),
         "bills": _records(bills),
-        "last_read": last_read,
+        "last_read": cutoff,
     }
 
 

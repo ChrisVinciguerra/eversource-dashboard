@@ -76,15 +76,8 @@ class Job:
     _mfa_ready: threading.Event = field(default_factory=threading.Event)
 
     def state(self) -> Json:
-        if self.running:
-            status = "running"
-        elif self.error is not None:
-            status = "error"
-        else:
-            status = "ok"
         return {
             "kind": self.kind,
-            "status": status,
             "running": self.running,
             "log": self.log,
             "error": self.error,
@@ -208,6 +201,7 @@ def api_data() -> Json:
     except NoExports as error:
         return {
             "intervals": {},
+            "flags": [],
             "monthly": None,
             "bills": None,
             "last_read": None,
@@ -258,7 +252,7 @@ def api_job() -> Json:
     state = (
         _job.state()
         if _job is not None
-        else {"kind": None, "status": "idle", "running": False}
+        else {"kind": None, "running": False}
     )
     return {**state, **_freshness()}
 

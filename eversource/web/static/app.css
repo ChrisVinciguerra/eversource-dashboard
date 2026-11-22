@@ -1,493 +1,365 @@
-/* Design tokens — reference dataviz palette; dark values are their own
-   validated steps, not an automatic flip. */
+/* Tokens. Each is a light-dark() pair so both themes are stated side by side;
+   app.js reads the same pairs for the canvas charts (hex only, no commas). */
 :root {
-  color-scheme: light;
-  --page:           #f9f9f7;
-  --surface-1:      #fcfcfb;
-  --text-primary:   #0b0b0b;
-  --text-secondary: #52514e;
-  --text-muted:     #898781;
-  --gridline:       #e1e0d9;
-  --baseline:       #c3c2b7;
-  --border:         rgba(11, 11, 11, 0.10);
-  --series-1:       #2a78d6;  /* blue  — usage */
-  --series-2:       #eb6834;  /* orange */
-  --series-3:       #1baf7a;  /* aqua */
-  --series-4:       #d99400;  /* yellow — darkened a touch for white bg */
-  --delta-good:     #006300;  /* down (less energy) is good */
-  --delta-bad:      #d03b3b;
+  color-scheme: light dark;
+  --page:        light-dark(#ffffff, #111215);
+  --ink:         light-dark(#15161a, #f2f2ef);
+  --text-2:      light-dark(#565a61, #b4b6bb);
+  --muted:       light-dark(#8b8f97, #7c8088);
+  --rule:        light-dark(#ececee, #232529);
+  --rule-strong: light-dark(#c5c8ce, #44474e);
+  --tint:        light-dark(#15161a0d, #ffffff10);  /* the selected day, at every scale */
+  --meter:       light-dark(#30333a, #b9bcc4);      /* the meter: total, or what no known device explains */
+  --heat:        light-dark(#2a78d6, #3987e5);      /* the calendar's shading: how heavy a day was */
+  --dev-1:       light-dark(#eb6834, #d95926);
+  --dev-2:       light-dark(#1baf7a, #199e70);
+  --dev-3:       light-dark(#6250d6, #9085e9);
+  --dev-4:       light-dark(#e87ba4, #d55181);
+  --ref:         light-dark(#b3b6bd, #5d6169);      /* the cycle being compared against */
+  --flag:        light-dark(#d6382d, #ff6a55);
+  --good:        light-dark(#0a6b2b, #4cc26a);      /* less energy is good */
+  --bad:         light-dark(#c2372d, #ff7464);
 }
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --page:           #0d0d0d;
-    --surface-1:      #1a1a19;
-    --text-primary:   #ffffff;
-    --text-secondary: #c3c2b7;
-    --text-muted:     #898781;
-    --gridline:       #2c2c2a;
-    --baseline:       #383835;
-    --border:         rgba(255, 255, 255, 0.16);
-    --series-1:       #4a93ea;
-    --series-2:       #e2653a;
-    --series-3:       #1fb07e;
-    --series-4:       #e09a14;
-    --delta-good:     #0ca30c;
-    --delta-bad:      #d03b3b;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page:           #0d0d0d;
-  --surface-1:      #1a1a19;
-  --text-primary:   #ffffff;
-  --text-secondary: #c3c2b7;
-  --text-muted:     #898781;
-  --gridline:       #2c2c2a;
-  --baseline:       #383835;
-  --border:         rgba(255, 255, 255, 0.16);
-  --series-1:       #4a93ea;
-  --series-2:       #e2653a;
-  --series-3:       #1fb07e;
-  --series-4:       #e09a14;
-  --delta-good:     #0ca30c;
-  --delta-bad:      #d03b3b;
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
   background: var(--page);
-  color: var(--text-primary);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
-main {
-  max-width: 1200px;
+main, .mast, .banner, .foot {
+  max-width: 1240px;
   margin: 0 auto;
-  padding: 0 20px 32px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  padding-left: 28px;
+  padding-right: 28px;
 }
 
-/* ------------------------------------------------------------- header --- */
+/* ----------------------------------------------------------- masthead --- */
 
-.topbar {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 18px 20px 10px;
+.mast {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+  padding-top: 18px;
+  padding-bottom: 26px;
 }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand h1 { font-size: 18px; font-weight: 650; margin: 0; letter-spacing: 0.01em; }
-.brand-mark {
-  width: 12px; height: 12px; border-radius: 4px;
-  background: var(--series-1);
-}
-.topbar-right { display: flex; align-items: center; gap: 10px; }
-.status-text { color: var(--text-secondary); font-size: 13px; }
-.stale-badge {
-  color: var(--delta-bad); font-size: 12px;
-  border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px;
-}
+.mast h1 { margin: 0; font-size: 14px; font-weight: 650; }
+.mast-right { display: flex; align-items: baseline; gap: 18px; }
+.quiet { color: var(--muted); font-size: 13px; }
+.stale { color: var(--bad); font-size: 13px; font-weight: 600; }
 
-/* One generated sentence about the state of the month: the page's narrator. */
-.tagline {
-  margin: 0;
-  font-size: 15px;
-  color: var(--text-secondary);
-}
-.tagline strong { color: var(--text-primary); font-weight: 600; }
-.tagline .delta-good, .cycle-rows dd.good { color: var(--delta-good); }
-.tagline .delta-bad, .cycle-rows dd.bad { color: var(--delta-bad); }
+/* ----------------------------------------------------------- controls --- */
+/* Controls are words: muted until active or hovered, never boxed. */
 
-/* ------------------------------------------------------------ buttons --- */
+.link, .tabs button, .pager button {
+  font: inherit;
+  font-size: 13px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.link:hover, .tabs button:hover, .pager button:hover:not(:disabled) { color: var(--ink); }
+.link:disabled { opacity: 0.4; cursor: default; }
+.link.active { color: var(--ink); }
+:focus-visible { outline: 2px solid var(--heat); outline-offset: 2px; border-radius: 2px; }
+
+.tabs { display: inline-flex; gap: 14px; }
+.tabs button { color: var(--muted); padding-bottom: 2px; border-bottom: 1.5px solid transparent; }
+.tabs button.active { color: var(--ink); border-bottom-color: var(--ink); }
+
+.pager { display: inline-flex; align-self: center; }
+.pager button { font-size: 20px; line-height: 1; padding: 0 7px 3px; }
+.pager button:disabled { opacity: 0.25; cursor: default; }
 
 .btn {
   font: inherit;
   font-size: 13px;
   padding: 6px 14px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface-1);
-  color: var(--text-primary);
+  border-radius: 5px;
+  border: 1px solid var(--rule-strong);
+  background: transparent;
+  color: var(--ink);
   cursor: pointer;
 }
-.btn:hover { border-color: var(--baseline); }
-.btn:disabled { opacity: 0.5; cursor: default; }
-.btn-ghost { border-color: transparent; background: transparent; color: var(--text-secondary); }
-.btn-ghost:hover { border-color: var(--border); }
-.btn-ghost.active { color: var(--text-primary); border-color: var(--border); }
-.btn-accent { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+.btn-accent { background: var(--ink); border-color: var(--ink); color: var(--page); }
 
 /* ------------------------------------------------------------- banner --- */
 
 .banner {
-  max-width: 1200px;
-  margin: 0 auto 14px;
-  padding: 10px 20px;
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--text-secondary);
+  margin-top: -14px;
+  padding-bottom: 14px;
+  color: var(--text-2);
   font-size: 13px;
 }
-.banner.error { color: var(--delta-bad); }
-
-/* ------------------------------------------------------------- dialog --- */
-
-.dialog {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-1);
-  color: var(--text-primary);
-  padding: 22px 24px;
-  width: min(360px, calc(100vw - 32px));
-}
-.dialog::backdrop { background: rgb(0 0 0 / 45%); }
-.dialog h2 { margin: 0 0 6px; font-size: 16px; }
-.dialog-note { margin: 0 0 16px; font-size: 12px; color: var(--text-secondary); }
-.dialog label {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-.dialog input {
-  width: 100%;
-  margin-bottom: 14px;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--page);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 13px;
-}
-.dialog input:focus { outline: none; border-color: var(--series-1); }
-.dialog-error { margin: 0 0 12px; font-size: 12px; color: var(--delta-bad); }
-.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.banner.error { color: var(--bad); }
 .spinner {
-  width: 12px; height: 12px;
-  border: 2px solid var(--gridline);
-  border-top-color: var(--series-1);
+  width: 11px; height: 11px;
+  border: 1.5px solid var(--rule-strong);
+  border-top-color: var(--ink);
   border-radius: 50%;
   animation: spin 0.9s linear infinite;
   flex: none;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ------------------------------------------------------------- layout --- */
-/* Two altitudes on the left (the whole cycle, then one day under the
-   microscope), a quiet facts rail on the right. */
+/* ------------------------------------------------------------- dialog --- */
 
-.layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 16px;
-  align-items: start;
-}
-@media (max-width: 920px) { .layout { grid-template-columns: 1fr; } }
-
-.charts-col, .side-col, #history {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.charts-col { min-width: 0; }
-
-/* -------------------------------------------------------------- cards --- */
-
-.card {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 14px 16px 10px;
-}
-.card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 4px;
-}
-.card-head h2 { font-size: 15px; font-weight: 650; margin: 0; }
-.card-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.card-sub {
-  font-size: 12.5px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.card-tools { display: flex; align-items: center; gap: 8px; flex: none; }
-.card-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 16px;
-}
-
-.chart { height: 340px; }
-.chart-overview { height: 240px; }
-.chart-sm { height: 280px; }
-.chart.loading { opacity: 0.55; transition: opacity 0.2s; }
-
-/* Cycle / day pagers. */
-.pager {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-.pager button {
-  font: inherit;
-  font-size: 14px;
-  line-height: 1;
-  padding: 4px 10px;
-  border: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.pager button:hover:not(:disabled) { color: var(--text-primary); background: var(--page); }
-.pager button:disabled { opacity: 0.35; cursor: default; }
-.pager button + button { border-left: 1px solid var(--border); }
-
-/* ------------------------------------------------------------ filters --- */
-
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-.seg {
-  display: inline-flex;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 2px;
-}
-.seg button {
-  font: inherit;
-  font-size: 13px;
-  padding: 4px 12px;
-  border: 0;
+.dialog {
+  border: 1px solid var(--rule-strong);
   border-radius: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-.seg button:hover { color: var(--text-primary); }
-.seg button.active {
   background: var(--page);
-  color: var(--text-primary);
-  font-weight: 600;
-  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--ink);
+  padding: 22px 24px;
+  width: min(360px, calc(100vw - 32px));
 }
-.seg[hidden] { display: none; }
-/* Compact variant for card headers, matching the pager's height. */
-.seg-sm button { font-size: 12.5px; padding: 2px 9px; }
-/* Device chips: active means the device is broken out as its own series,
-   inactive that it's folded into "Everything else". The dot carries the
-   device's legend color. */
-.chips button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.dialog h2 { margin: 0 0 6px; font-size: 16px; }
+.dialog-note { margin: 0 0 16px; font-size: 12.5px; color: var(--text-2); }
+.dialog label { display: block; margin-bottom: 4px; font-size: 12.5px; color: var(--text-2); }
+.dialog input {
+  width: 100%;
+  margin-bottom: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
 }
-.chip-dot, .bk-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  flex: none;
-}
-.chips button:not(.active) .chip-dot { opacity: 0.35; }
-/* Total mode folds every device in; the chips go inert until it's left. */
-.chips.off { opacity: 0.45; pointer-events: none; }
+.dialog input:focus { outline: none; border-color: var(--ink); }
+.dialog-error { margin: 0 0 12px; font-size: 12.5px; color: var(--bad); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* ----------------------------------------------------------- side rail --- */
+/* -------------------------------------------------------------- layout --- */
+/* Two columns, twice: the calendar with the cycle's read beside it, then the
+   picked day's chart with its key beside it, on the same column edges. */
 
-.side-card { padding: 16px 18px 14px; }
-
-.overline {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-secondary);
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 16px;
 }
+.head-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 8px; min-width: 0; }
+.head-tools { display: flex; align-items: baseline; gap: 22px; margin-left: auto; }
+.head h2 { margin: 0; font-size: 22px; font-weight: 640; letter-spacing: -0.015em; }
+.sub { color: var(--text-2); font-size: 13px; font-weight: 400; letter-spacing: 0; }
 
-.cycle-big {
-  margin-top: 6px;
-  font-size: 34px;
-  line-height: 1.1;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  font-variant-numeric: tabular-nums;
+.cycle-body, .day-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
+  column-gap: 48px;
 }
-.cycle-big small { font-size: 16px; font-weight: 500; color: var(--text-secondary); }
-.cycle-sub {
-  margin-top: 4px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
+.cycle-body { margin-top: 14px; }
+.plot { min-width: 0; }
+.chart.loading { opacity: 0.5; transition: opacity 0.2s; }
+.plot.as-table > .chart { display: none; }   /* a chart showing its table steps aside */
 
-.progress {
-  margin-top: 10px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--gridline);
+/* ------------------------------------------------------------ calendar --- */
+/* Shading is one hue, pale to full: how heavy the day was. */
+
+.cal-days, .cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.cal-days span { padding: 0 0 6px 9px; font-size: 12px; color: var(--muted); }
+.day {
+  position: relative;
+  display: grid;
+  grid-template: "date mark" auto "val val" 1fr / auto 1fr;
+  column-gap: 4px;
+  min-width: 0;
+  height: 78px;
+  padding: 6px 9px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
   overflow: hidden;
 }
-.progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--series-1);
-}
-.progress-label {
-  margin-top: 4px;
-  font-size: 11.5px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
+.d-date { grid-area: date; justify-self: start; font-size: 12.5px; line-height: 18px; color: var(--text-2); white-space: nowrap; }
+.d-mark { grid-area: mark; justify-self: end; font-size: 11.5px; line-height: 18px; color: var(--text-2); white-space: nowrap; }
+.d-mark i { font-style: normal; }
+.d-val { grid-area: val; align-self: end; font-size: 17px; line-height: 1.1; font-weight: 620; letter-spacing: -0.01em; }
 
-.cycle-rows { margin: 12px 0 0; }
-.cycle-rows > div {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 10px;
-  padding: 6px 0;
-  border-top: 1px solid var(--gridline);
+.day.has { background: color-mix(in srgb, var(--heat) calc(7% + var(--h) * 48%), transparent); cursor: pointer; }
+.day.has:hover { box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.day.open { box-shadow: inset 0 0 0 1px var(--rule); }           /* still to come */
+.day.open .d-date, .day.out .d-date { color: var(--muted); }
+.day.out .d-date { opacity: 0.6; }                               /* not this cycle */
+.day.end { box-shadow: inset 0 0 0 1.5px var(--ink); }           /* the bill closes here */
+.day.end.est { box-shadow: none; outline: 1.5px dashed var(--ink); outline-offset: -1.5px; }
+.day.end .d-mark, .day.end .d-date { color: var(--ink); font-weight: 650; }
+.day.sel, .day.sel:hover { box-shadow: inset 0 0 0 2px var(--ink); }
+.day.today .d-date {
+  margin-left: -4px; padding: 0 6px; border-radius: 9px;
+  background: var(--ink); color: var(--page); font-weight: 600;
 }
-.cycle-rows dt {
-  margin: 0;
-  font-size: 12.5px;
-  color: var(--text-muted);
+/* A flagged stretch: a red line along the top of its days, joined across the gaps. */
+.day.flag { overflow: visible; }
+.day.flag::before {
+  content: ""; position: absolute; top: 0; left: -3px; right: 0; height: 3px;
+  background: var(--flag);
 }
-.cycle-rows dd {
-  margin: 0;
-  font-size: 13.5px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-.cycle-rows dd small { font-weight: 500; color: var(--text-secondary); }
+.day.flag-a::before, .day.flag:nth-child(7n + 1)::before { left: 0; border-top-left-radius: 3px; }
+.day.flag-z::before, .day.flag:nth-child(7n)::before { border-top-right-radius: 3px; }
+.cal-note { margin: 9px 0 0; font-size: 12px; color: var(--muted); }
 
-.breakdown-list {
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-}
-.breakdown-list li {
+/* ---------------------------------------------------------- cycle read --- */
+/* When the bill closes, where it lands, and the running total behind that. */
+
+.read { min-width: 0; padding-top: 22px; }
+.closes { margin: 0; font-size: 20px; line-height: 1.25; letter-spacing: -0.01em; color: var(--text-2); }
+.closes b { color: var(--ink); font-weight: 650; }
+.closes-sub { margin: 3px 0 0; font-size: 13px; color: var(--text-2); }
+.land-big { margin-top: 26px; font-size: 54px; line-height: 1; font-weight: 650; letter-spacing: -0.03em; }
+.land-big small { font-size: 22px; font-weight: 500; letter-spacing: 0; color: var(--text-2); }
+.land-line { margin-top: 6px; font-size: 13px; color: var(--text-2); }
+.land-vs { font-size: 13px; }
+.land-delta { font-weight: 600; }
+.land-delta.good { color: var(--good); }
+.land-delta.bad { color: var(--bad); }
+.land-ref { color: var(--muted); }
+#trend-chart { height: 200px; margin-top: 20px; }
+
+/* ----------------------------------------------------------------- day --- */
+
+#day-band { margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--rule-strong); }
+#day-band h2 { font-size: 18px; font-weight: 630; }
+#day-band .pager { margin-right: 4px; }
+#day-chart { height: 260px; margin-top: 6px; }
+.day-body .table-wrap { margin-top: 10px; }
+
+/* The device key is the day chart's legend, the per-device toggle, and the
+   split for the day and for the cycle, in one list. */
+.key { align-self: start; padding-top: 22px; }
+.key ul { list-style: none; margin: 0; padding: 0; }
+.key-row {
   display: grid;
-  grid-template-columns: 9px minmax(0, 1fr) 40px minmax(64px, auto);
+  grid-template-columns: 9px minmax(0, 1fr) 52px 52px 34px;
   gap: 8px;
   align-items: center;
-  padding: 7px 0;
-  border-top: 1px solid var(--gridline);
-  font-size: 13.5px;
-}
-.breakdown-list li:first-child { border-top: 0; }
-.bk-name, .flag-head {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.bk-share {
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-.bk-value {
-  text-align: right;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-/* Flags: headline only; the evidence appears when clicked, as a jump of the
-   charts to the flagged day. */
-.flag-list {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-}
-.flag-list li + li { border-top: 1px solid var(--gridline); }
-.flag-list button {
-  display: block;
   width: 100%;
-  text-align: left;
+  padding: 3px 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
   font: inherit;
   font-size: 13px;
-  padding: 8px 2px;
-  border: 0;
-  background: transparent;
-  color: var(--text-primary);
-  cursor: pointer;
-  border-radius: 6px;
+  text-align: left;
 }
-.flag-list button:hover { background: color-mix(in srgb, var(--series-1) 8%, transparent); }
-.flag-line {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.flag-icon { flex: none; font-size: 11px; }
-.flag-icon.overnight { color: var(--series-4); }
-.flag-value {
-  margin-left: auto;
-  flex: none;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
-.flag-detail {
+button.key-row { cursor: pointer; }
+.key-head { padding-bottom: 5px; font-size: 12px; color: var(--muted); }
+.key-row > :nth-child(n + 3) { text-align: right; }
+.key-swatch { width: 9px; height: 9px; background: var(--c); border: 1.5px solid var(--c); }
+.key-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.key-amt { font-weight: 600; }
+.key-cyc { color: var(--text-2); }
+.key-share { color: var(--muted); font-size: 12px; }
+.key-row.folded { color: var(--muted); }
+.key-row.folded .key-swatch { background: none; }
+button.key-row:hover .key-name { text-decoration: underline; text-underline-offset: 3px; }
+.key.total-only .key-swatch { background: none; }
+
+/* Flags: rare. When one exists it is a footnote under the calendar, in the
+   same red that runs along its days. */
+.flags { list-style: none; margin: 0; padding: 0; }
+.flags li { margin-top: 14px; }
+.flags button {
   display: block;
-  margin-top: 1px;
-  padding-left: 19px;
-  font-size: 12px;
-  color: var(--text-muted);
+  position: relative;
+  max-width: 720px;
+  padding: 0 0 0 17px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.flags-more {
-  margin-top: 6px;
-  padding: 3px 8px;
-  font-size: 12px;
+.flags button::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 9px;
+  width: 11px; height: 3px;
+  background: var(--flag);
 }
+.flag-head { font-size: 15px; font-weight: 650; margin-right: 12px; }
+.flag-value { font-size: 15px; color: var(--text-2); white-space: nowrap; }
+.flag-detail { display: block; margin-top: 1px; font-size: 13px; color: var(--text-2); }
+.flags button:hover .flag-head { text-decoration: underline; text-underline-offset: 3px; }
+
+/* ------------------------------------------------------------ history --- */
+
+#history { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule-strong); }
+#bills-chart { height: 200px; margin-top: 6px; }
+#monthly-table { margin-top: 22px; }
 
 /* -------------------------------------------------------------- table --- */
 
-.table-wrap { max-height: 380px; overflow: auto; margin-top: 6px; }
-.table-wrap table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
+.table-wrap { max-height: 420px; overflow: auto; }
+.table-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table-wrap th, .table-wrap td {
   text-align: left;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--gridline);
-  font-variant-numeric: tabular-nums;
+  padding: 5px 18px 5px 0;
+  border-bottom: 1px solid var(--rule);
   white-space: nowrap;
 }
+.table-wrap .num { text-align: right; }
+.table-wrap th:last-child, .table-wrap td:last-child { padding-right: 0; }
 .table-wrap th {
   position: sticky; top: 0;
-  background: var(--surface-1);
-  color: var(--text-secondary);
-  font-weight: 600;
+  background: var(--page);
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom-color: var(--rule-strong);
 }
+.table-wrap tr[data-key] { cursor: pointer; }
+.table-wrap tr[data-key]:hover td, .table-wrap tr.on td { background: var(--tint); }
+.table-wrap tr.on td { font-weight: 600; }
+
 .foot {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 20px 28px;
-  color: var(--text-secondary);
+  padding-top: 28px;
+  padding-bottom: 32px;
+  color: var(--muted);
   font-size: 12.5px;
+  max-width: 1240px;
+}
+
+/* -------------------------------------------------------------- narrow --- */
+/* One column: the calendar, then its read; the day chart, then its key. */
+
+@media (max-width: 900px) {
+  .cycle-body, .day-body { grid-template-columns: minmax(0, 1fr); }
+  .read { padding-top: 24px; }
+  .key { padding-top: 14px; max-width: 420px; }
+}
+@media (max-width: 560px) {
+  main, .mast, .banner, .foot { padding-left: 16px; padding-right: 16px; }
+  .mast { padding-bottom: 18px; }
+  .mast-right { flex-wrap: wrap; justify-content: flex-end; row-gap: 2px; }
+  #data-through { order: 1; flex-basis: 100%; text-align: right; }
+  .head-tools { gap: 16px; }
+  .cal-days span { padding-left: 5px; font-size: 11px; }
+  .day { height: 56px; padding: 4px 5px 5px; column-gap: 2px; }
+  .d-date { font-size: 11px; line-height: 15px; }
+  .d-mark { font-size: 9.5px; line-height: 15px; letter-spacing: -0.02em; }
+  .d-mark i { display: none; }
+  .d-val { font-size: 13px; }
+  .day.today .d-date { margin-left: -1px; padding: 0 3px; }
+  .day.today .d-mark { letter-spacing: -0.04em; }
+  .land-big { font-size: 46px; }
 }
