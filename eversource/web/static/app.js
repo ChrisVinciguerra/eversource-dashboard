@@ -775,14 +775,18 @@ $("key-list").addEventListener("click", (event) => {
 
 // The day chart's y range. One range for the whole cycle keeps days
 // comparable but leaves a quiet day as a strip along the bottom (one space
-// heater sets the scale for a month). So the axis sits on a 1-2-5 ladder:
-// the rung that fits the cycle's typical daily peak is the usual scale, and a
-// day moves off it only as far as it must — up for a heavy day, down (two
-// rungs at most) for a quiet one. `zoom` says how far: 1 on the usual scale.
-const RUNGS = [1, 2, 5];
-const rungValue = (r) => RUNGS[((r % 3) + 3) % 3] * 10 ** Math.floor(r / 3);
+// heater sets the scale for a month). So the axis sits on a ladder of round
+// maxima: the rung that fits the cycle's typical daily peak is the usual
+// scale, and a day moves off it only as far as it must — up for a heavy day,
+// down (about 5x at most) for a quiet one. `zoom` says how far: 1 on the
+// usual scale. The rungs are close enough that a day's peak always reaches
+// at least two thirds of the way up; each carries its number of gridlines.
+const RUNGS = [[1, 5], [1.5, 3], [2, 4], [3, 6], [4, 4], [5, 5], [6, 6], [8, 4]];
+const QUIET_RUNGS = 5;   // how far below the usual scale a quiet day may go
+const rungAt = (r) => RUNGS[((r % RUNGS.length) + RUNGS.length) % RUNGS.length];
+const rungValue = (r) => rungAt(r)[0] * 10 ** Math.floor(r / RUNGS.length);
 function rungFor(x) {
-  let r = Math.floor(Math.log10(x)) * 3;
+  let r = Math.floor(Math.log10(x)) * RUNGS.length;
   while (rungValue(r) < x - 1e-12) r++;
   return r;
 }
@@ -810,9 +814,9 @@ function detailYExtent(entries, metric, stacked, win, day) {
   const typical = median([...peaks.values()]);
   if (!(typical > 0)) return null;
   const usual = rungFor(typical);
-  const rung = Math.max(usual - 2, rungFor(peaks.get(day) || typical));
+  const rung = Math.max(usual - QUIET_RUNGS, rungFor(peaks.get(day) || typical));
   const max = rungValue(rung);
-  const interval = max / (RUNGS[((rung % 3) + 3) % 3] === 2 ? 4 : 5);
+  const interval = max / rungAt(rung)[1];
   // Slightly negative buckets are breakdown noise (device estimates
   // overshooting the meter), not worth a negative axis; real export is.
   const min = lo < -0.1 * max ? -Math.ceil(-lo / interval) * interval : 0;
@@ -946,8 +950,9 @@ function renderDay() {
   }, REPLACE);
 
   $("day-title").textContent = fmtDay(day, { weekday: "long", month: "long", day: "numeric" });
-  // The day's reading, in words beside its title; and a note whenever the
-  // axis is off the cycle's usual scale, so heights aren't misread.
+  // The day's reading, in words beside its title; and a note when the axis
+  // is well off the cycle's usual scale (a rung or two either way goes
+  // unremarked), so heights aren't misread.
   if (!filled) {
     $("day-read").textContent = "No fine-grained reads for this day.";
   } else {
@@ -958,8 +963,8 @@ function renderDay() {
       costSum != null ? fmtUsd(costSum) : "",
       `peak at ${clockLabel(labels[peak])}`,
       filled < count ? `read to ${clockLabel(labels[filled] ?? "24:00")}` : "",
-      zoom > 1 ? `quiet day: axis zoomed in ${round(zoom, 10)}×`
-        : zoom < 1 ? `heavy day: axis zoomed out ${round(1 / zoom, 10)}×` : "",
+      zoom >= 1.5 ? `quiet day: axis zoomed in ${round(zoom, 10)}×`
+        : zoom <= 1 / 1.5 ? `heavy day: axis zoomed out ${round(1 / zoom, 10)}×` : "",
     ].filter(Boolean).join(" · ");
   }
   const all = dayList();
