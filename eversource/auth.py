@@ -19,6 +19,7 @@ expired sessions can be renewed with no interaction at all.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import html
 import json
@@ -38,8 +39,8 @@ from .config import (
     KEYCHAIN_SERVICE,
     LOGIN_URL,
     MFALOGIN_URL,
-    MSLOGIN_URL,
     MSLOGIN_RETURN_URL,
+    MSLOGIN_URL,
     OKTA,
     OKTA_CLIENT_ID,
     OKTA_ISSUER,
@@ -95,11 +96,20 @@ def keychain_get(username: str) -> str | None:
     """
     try:
         done = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", KEYCHAIN_SERVICE, "-a", username, "-w"],
-            capture_output=True, text=True, check=True,
+            [
+                "security",
+                "find-generic-password",
+                "-s",
+                KEYCHAIN_SERVICE,
+                "-a",
+                username,
+                "-w",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except subprocess.CalledProcessError, FileNotFoundError:
         try:
             return PASSWORD_PATH.read_text().strip() or None
         except OSError:
@@ -111,9 +121,20 @@ def keychain_set(username: str, password: str) -> None:
     """Store (or replace) the password for `username` (see keychain_get)."""
     try:
         subprocess.run(
-            ["security", "add-generic-password", "-U",
-             "-s", KEYCHAIN_SERVICE, "-a", username, "-w", password],
-            capture_output=True, text=True, check=True,
+            [
+                "security",
+                "add-generic-password",
+                "-U",
+                "-s",
+                KEYCHAIN_SERVICE,
+                "-a",
+                username,
+                "-w",
+                password,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
         )
     except FileNotFoundError:
         PASSWORD_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -127,12 +148,16 @@ def keychain_set(username: str, password: str) -> None:
 def keychain_delete(username: str) -> None:
     """Remove the stored password, ignoring the case where there isn't one."""
     PASSWORD_PATH.unlink(missing_ok=True)
-    with_args = ["security", "delete-generic-password",
-                 "-s", KEYCHAIN_SERVICE, "-a", username]
-    try:
+    with_args = [
+        "security",
+        "delete-generic-password",
+        "-s",
+        KEYCHAIN_SERVICE,
+        "-a",
+        username,
+    ]
+    with contextlib.suppress(FileNotFoundError):  # no keychain off macOS
         subprocess.run(with_args, capture_output=True, text=True, check=False)
-    except FileNotFoundError:  # off macOS there is no keychain to clear
-        pass
 
 
 def credentials(cfg: Config) -> tuple[str, str] | None:
@@ -173,7 +198,8 @@ def load_cookies(session: requests.Session, cfg: Config) -> requests.Session:
     """Put the saved cookies back into a fresh session."""
     for cookie in cfg.get("cookies", []):
         session.cookies.set(
-            cookie["name"], cookie["value"],
+            cookie["name"],
+            cookie["value"],
             domain=cookie.get("domain", ".eversource.com"),
             path=cookie.get("path", "/"),
         )
@@ -186,7 +212,7 @@ def _token_expiry(token: str, fallback: int) -> int:
         claims = token.split(".")[1]
         padded = claims + "=" * (-len(claims) % 4)
         return int(json.loads(base64.urlsafe_b64decode(padded))["exp"])
-    except Exception:
+    except Exception:  # noqa: BLE001 -- any unreadable token gets the fallback
         return int(time.time()) + fallback
 
 
@@ -219,9 +245,7 @@ def _form_token(page_html: str) -> str:
     return html.unescape(match.group(1))
 
 
-def _eversource_signin(
-    session: requests.Session, username: str, password: str
-) -> dict:
+def _eversource_signin(session: requests.Session, username: str, password: str) -> dict:
     """Steps 1-2: the ASP.NET session cookies Eversource's own APIs require."""
     page = session.get(LOGIN_URL, timeout=30)
     page.raise_for_status()

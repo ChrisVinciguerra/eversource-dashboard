@@ -87,7 +87,7 @@ def normalize_display_values(data: dict[str, pd.DataFrame]) -> None:
         if "meter" in frame.columns:
             frame["meter"] = frame["meter"].astype(str)
         # With several meters, series names need the meter to stay distinct.
-        if {"stream", "meter"} <= set(frame.columns) and frame["meter"].nunique() > 1:
+        if {"stream", "meter"} <= set(frame.columns) and frame["meter"].nunique() > 1:  # noqa: PD101 -- counting meters
             frame["stream"] = frame["stream"] + " · " + frame["meter"]
 
 
@@ -136,7 +136,7 @@ def add_effective_rate_cost(
     days = pd.DataFrame({"day": sorted(frame["start"].str[:10].unique())})
     days["d"] = pd.to_datetime(days["day"])
     matched = pd.merge_asof(days, rates, on="d")
-    rate_by_day = dict(zip(matched["day"], matched["rate"].bfill()))
+    rate_by_day = dict(zip(matched["day"], matched["rate"].bfill(), strict=True))
     frame["effective_rate_usd"] = frame["start"].str[:10].map(rate_by_day).round(4)
     frame["cost_usd"] = (frame["value"] * frame["effective_rate_usd"]).round(5)
     return rate_by_day
@@ -157,21 +157,21 @@ def _column(series: pd.Series) -> list[Any]:
     return [None if pd.isna(value) else value for value in series]
 
 
-def _interval_payload(frame: pd.DataFrame, has_cost: bool) -> Json:
+def _interval_payload(frame: pd.DataFrame, *, has_cost: bool) -> Json:
     """Pack one interval dataset into columnar per-stream series."""
     series = []
     for stream, group in frame.groupby("stream", sort=False):
         # The frames are sorted by the start *string*, which interleaves the
         # repeated 1am hour of a DST fall-back day (…01:00-04:00 < …01:00-05:00
         # < …01:15-04:00); order the points by real time instead.
-        group = group.iloc[pd.to_datetime(group["start"], utc=True).argsort()]
+        points = group.iloc[pd.to_datetime(group["start"], utc=True).argsort()]
         entry: Json = {
             "name": str(stream),
-            "starts": group["start"].tolist(),
-            "values": _column(group["value"]),
+            "starts": points["start"].tolist(),
+            "values": _column(points["value"]),
         }
         if has_cost:
-            entry["costs"] = _column(group["cost_usd"])
+            entry["costs"] = _column(points["cost_usd"])
         series.append(entry)
     return {"unit": unit_of(frame), "series": series}
 
@@ -194,7 +194,7 @@ def build_payload() -> Json:
     quarter = data.get("quarter_hour")
     meter: dict[str, float] = {}
     if quarter is not None and unit_of(quarter) == "kWh":
-        for start, value in zip(quarter["start"], quarter["value"]):
+        for start, value in zip(quarter["start"], quarter["value"], strict=True):
             if pd.notna(value):
                 key = str(start)[:16]
                 meter[key] = meter.get(key, 0.0) + float(value)
@@ -207,7 +207,7 @@ def build_payload() -> Json:
         if frame is None:
             continue
         rate_by_day = rates[name] = add_effective_rate_cost(frame, bills)
-        intervals[name] = _interval_payload(frame, rate_by_day is not None)
+        intervals[name] = _interval_payload(frame, has_cost=rate_by_day is not None)
         if devices and unit_of(frame) == "kWh":
             starts = sorted(set(frame["start"]))
             intervals[name]["devices"] = [

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run
 """Entry point shim — the real code lives in the eversource/ package.
 
 Run via uv so the project environment is used:

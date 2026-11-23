@@ -24,6 +24,7 @@ from .config import (
     Config,
     Json,
     NoExports,
+    today,
 )
 from .data import DATASET_KEYS
 from .progress import emit
@@ -87,8 +88,8 @@ def interval_bounds(intervals: pd.Series) -> tuple[pd.Series, pd.Series]:
 
 def months_of_history(start: date, minimum: int) -> int:
     """Return the months of billed history needed to reach back to `start`."""
-    today = date.today()
-    span = (today.year - start.year) * 12 + today.month - start.month + 1
+    now = today()
+    span = (now.year - start.year) * 12 + now.month - start.month + 1
     return max(minimum, span)
 
 
@@ -253,8 +254,10 @@ def aggregate(quarter: pd.DataFrame, freq: str) -> pd.DataFrame:
     # Floor hours in UTC and days via normalize(): flooring local wall times
     # raises on the repeated 1am hour of a DST fall-back day. Hour boundaries
     # match in UTC and local time; local midnight is never ambiguous.
-    bucket = ts.dt.floor(freq).dt.tz_convert(TZ) if freq == "h" else (
-        ts.dt.tz_convert(TZ).dt.normalize()
+    bucket = (
+        ts.dt.floor(freq).dt.tz_convert(TZ)
+        if freq == "h"
+        else (ts.dt.tz_convert(TZ).dt.normalize())
     )
     out = (
         quarter.assign(start=bucket)
@@ -380,7 +383,7 @@ def run_update(
     emit(f"updating from {start} to today")
     with Client(cfg) as client:
         account = client.pick_account(account_number)
-        frames = fetch_datasets(client, account, start, date.today())
+        frames = fetch_datasets(client, account, start, today())
 
     fresh = {name: rows_not_exported(name, frame) for name, frame in frames.items()}
     changed = {name: frames[name] for name, rows in fresh.items() if not rows.empty}
@@ -395,8 +398,5 @@ def run_update(
     if reads:
         emit(f"{reads} new 15-min reads, through {through}")
     else:
-        emit(
-            f"no new reads (still through {through}); "
-            f"updated {', '.join(changed)}"
-        )
+        emit(f"no new reads (still through {through}); updated {', '.join(changed)}")
     return out_dir

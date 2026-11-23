@@ -29,7 +29,7 @@ an unreachable source keeps serving the last successful fetch.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import json
 import pathlib
 import shlex
@@ -97,15 +97,26 @@ def load_devices() -> list[Json]:
 def _fetch_device_source(source: str) -> Json:
     """Fetch a device document from a local path, ssh "host:path", or http(s) URL."""
     if source.startswith(("http://", "https://")):
-        with urllib.request.urlopen(source, timeout=5) as response:
+        with urllib.request.urlopen(source, timeout=5) as response:  # noqa: S310 -- http(s) only, checked above
             return json.loads(response.read())
     if source.startswith(("/", "~")):
         return json.loads(pathlib.Path(source).expanduser().read_text())
     host, _, path = source.partition(":")
     proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-         host, "cat", shlex.quote(path)],
-        capture_output=True, text=True, timeout=15,
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=3",
+            host,
+            "cat",
+            shlex.quote(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
     )
     if proc.returncode != 0:
         raise OSError(proc.stderr.strip() or f"ssh {host} exited {proc.returncode}")
@@ -133,7 +144,7 @@ def refresh_device_sources() -> bool:
             fetched = _fetch_device_source(source)
             parse_spec(fetched)  # reject malformed documents, keep the cache
             text = json.dumps({"source": source, **fetched}, indent=2) + "\n"
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- one bad source must not stop the rest
             emit(f"device source {path.name}: {error}")
             continue
         if text != path.read_text():
@@ -152,7 +163,7 @@ FIT_SEARCH = 2
 
 def _abs_slot(key: str) -> int:
     """A key's quarter-hour slot index on a continuous local-time axis."""
-    day = datetime.date.fromisoformat(key[:10]).toordinal()
+    day = dt.date.fromisoformat(key[:10]).toordinal()
     return day * 96 + (int(key[11:13]) * 60 + int(key[14:16])) // 15
 
 
@@ -230,9 +241,7 @@ def _track_cycle(
         # slot for longer runs) rather than the template's shape, so flat-top
         # or stretched compressor runs come out whole. Per-slot and per-cycle
         # caps keep unrelated loads (a kettle during a burst) out.
-        take = [
-            min(resid.get(best + j, 0.0), slot_cap) for j in range(len(burst) + 1)
-        ]
+        take = [min(resid.get(best + j, 0.0), slot_cap) for j in range(len(burst) + 1)]
         trim = min(1.0, cycle_cap / sum(take)) if sum(take) > 0 else 0.0
         for j, amount in enumerate(take):
             if (slot := slots.get(best + j)) is not None:
@@ -292,7 +301,7 @@ def device_entry(
             round(value * rate, 5)
             if (rate := rate_by_day.get(start[:10])) is not None
             else None
-            for start, value in zip(starts, values)
+            for start, value in zip(starts, values, strict=True)
         ]
     return entry
 
@@ -328,7 +337,9 @@ def _overlap_readings(device: Json, other: Json) -> Json | None:
             port_kwh = port_values.get(key, 0.0)
             if port_kwh <= 0:
                 continue
-            if abs(port_kwh - other_kwh) <= OVERLAP_TOLERANCE * max(port_kwh, other_kwh):
+            if abs(port_kwh - other_kwh) <= OVERLAP_TOLERANCE * max(
+                port_kwh, other_kwh
+            ):
                 best = max(best, min(port_kwh, other_kwh))
         if best:
             slots[key] = round(best, 6)

@@ -24,8 +24,9 @@ as the repeating fallback pattern outside it.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
-import datetime
+import datetime as dt
 import json
 import pathlib
 import plistlib
@@ -34,8 +35,8 @@ import time
 
 SAMPLE_SECONDS = 30
 PUBLISH_SECONDS = 15 * 60
-PATTERN_DAYS = 14          # averaging window for the fallback pattern
-CHARGE_EFFICIENCY = 0.85   # wall Wh per battery Wh gained while asleep
+PATTERN_DAYS = 14  # averaging window for the fallback pattern
+CHARGE_EFFICIENCY = 0.85  # wall Wh per battery Wh gained while asleep
 SLOT_MINUTES = 15
 
 
@@ -43,7 +44,9 @@ def battery_state() -> tuple[float, float | None, float | None]:
     """Return (wall_w, battery_mah, battery_mv) from IORegistry."""
     out = subprocess.run(
         ["ioreg", "-arn", "AppleSmartBattery"],
-        capture_output=True, timeout=10, check=True,
+        capture_output=True,
+        timeout=10,
+        check=True,
     ).stdout
     info = plistlib.loads(out)[0]
     telemetry = info.get("PowerTelemetryData", {})
@@ -54,19 +57,23 @@ def battery_state() -> tuple[float, float | None, float | None]:
     return wall_mw / 1000.0, mah, info.get("Voltage")
 
 
-def slot_start(ts: datetime.datetime) -> datetime.datetime:
-    return ts.replace(minute=ts.minute - ts.minute % SLOT_MINUTES,
-                      second=0, microsecond=0)
+def slot_start(ts: dt.datetime) -> dt.datetime:
+    """Return the start of the slot containing `ts`."""
+    return ts.replace(
+        minute=ts.minute - ts.minute % SLOT_MINUTES, second=0, microsecond=0
+    )
 
 
-def slot_key(ts: datetime.datetime) -> str:
+def slot_key(ts: dt.datetime) -> str:
+    """Return the key of the slot containing `ts`."""
     return f"{slot_start(ts):%Y-%m-%dT%H:%M}"
 
 
 def append_row(path: pathlib.Path, header: str, row: str) -> None:
+    """Append a CSV row, writing the header first on a new file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     new = not path.exists()
-    with open(path, "a") as fh:
+    with path.open("a") as fh:
         if new:
             fh.write(header + "\n")
         fh.write(row + "\n")
@@ -84,9 +91,9 @@ def load_slot_kwh(state_dir: pathlib.Path) -> tuple[dict[str, float], str, str]:
     joules: dict[str, float] = {}
     first = last = None
     for path in sorted((state_dir / "samples").glob("*.csv")):
-        with open(path) as fh:
+        with path.open() as fh:
             for row in csv.DictReader(fh):
-                ts = datetime.datetime.fromisoformat(row["timestamp"])
+                ts = dt.datetime.fromisoformat(row["timestamp"])
                 first = min(first or ts, ts)
                 last = max(last or ts, ts)
                 energy = float(row["wall_w"]) * float(row["elapsed_s"])
@@ -95,14 +102,14 @@ def load_slot_kwh(state_dir: pathlib.Path) -> tuple[dict[str, float], str, str]:
 
     charge_log = state_dir / "sleep-charge.csv"
     if charge_log.exists():
-        with open(charge_log) as fh:
+        with charge_log.open() as fh:
             for row in csv.DictReader(fh):
-                a = datetime.datetime.fromisoformat(row["gap_start"])
-                b = datetime.datetime.fromisoformat(row["gap_end"])
+                a = dt.datetime.fromisoformat(row["gap_start"])
+                b = dt.datetime.fromisoformat(row["gap_end"])
                 total_j = float(row["wall_wh"]) * 3600.0
                 cur, span = slot_start(a), (b - a).total_seconds()
                 while cur < b:
-                    nxt = cur + datetime.timedelta(minutes=SLOT_MINUTES)
+                    nxt = cur + dt.timedelta(minutes=SLOT_MINUTES)
                     part = (min(nxt, b) - max(cur, a)).total_seconds() / span
                     joules[slot_key(cur)] = (
                         joules.get(slot_key(cur), 0.0) + total_j * part
@@ -119,9 +126,9 @@ def load_slot_kwh(state_dir: pathlib.Path) -> tuple[dict[str, float], str, str]:
     )
 
 
-def average_pattern(kwh: dict[str, float], end_day: datetime.date) -> list[float]:
+def average_pattern(kwh: dict[str, float], end_day: dt.date) -> list[float]:
     """Mean kWh per midnight-aligned slot over the PATTERN_DAYS trailing days."""
-    days = [f"{end_day - datetime.timedelta(days=n + 1)}" for n in range(PATTERN_DAYS)]
+    days = [f"{end_day - dt.timedelta(days=n + 1)}" for n in range(PATTERN_DAYS)]
     slots_per_day = 24 * 60 // SLOT_MINUTES
     totals = [0.0] * slots_per_day
     for key, value in kwh.items():
@@ -132,6 +139,7 @@ def average_pattern(kwh: dict[str, float], end_day: datetime.date) -> list[float
 
 
 def publish(state_dir: pathlib.Path, device_out: pathlib.Path, name: str) -> None:
+    """Write the device document the dashboard reads."""
     kwh, start, end = load_slot_kwh(state_dir)
     if not start:  # no samples yet; all-zero slots (on battery) still publish
         return
@@ -143,7 +151,7 @@ def publish(state_dir: pathlib.Path, device_out: pathlib.Path, name: str) -> Non
             "values_kwh": kwh,
         },
         "pattern": {
-            "values_kwh": average_pattern(kwh, datetime.date.today())
+            "values_kwh": average_pattern(kwh, dt.datetime.now().astimezone().date())
         },
     }
     device_out.parent.mkdir(parents=True, exist_ok=True)
@@ -154,14 +162,21 @@ def publish(state_dir: pathlib.Path, device_out: pathlib.Path, name: str) -> Non
 
 
 def main() -> None:
+    """Sample wall power forever, publishing every so often."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--name", default="Mac", help="device name in the dashboard")
-    parser.add_argument("--device-out", required=True, type=pathlib.Path,
-                        help="device JSON to publish (a devices/*.json points at it)")
-    parser.add_argument("--state-dir", type=pathlib.Path,
-                        default=pathlib.Path.home()
-                        / ".local/share/energy-dashboard/mac-power",
-                        help="where the sample CSVs accumulate")
+    parser.add_argument(
+        "--device-out",
+        required=True,
+        type=pathlib.Path,
+        help="device JSON to publish (a devices/*.json points at it)",
+    )
+    parser.add_argument(
+        "--state-dir",
+        type=pathlib.Path,
+        default=pathlib.Path.home() / ".local/share/energy-dashboard/mac-power",
+        help="where the sample CSVs accumulate",
+    )
     args = parser.parse_args()
 
     samples = args.state_dir / "samples"
@@ -175,18 +190,18 @@ def main() -> None:
         elapsed = now - prev_t
         try:
             wall_w, mah, mv = battery_state()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- a failed sample is skipped, not fatal
             prev_t = now
             continue
 
-        ts = datetime.datetime.now().astimezone()
+        ts = dt.datetime.now().astimezone()
         if elapsed > SAMPLE_SECONDS * 4:
             # Slept across the gap. The wall still charged the battery if it
             # was plugged in; estimate that energy from the charge delta.
             if None not in (prev_mah, prev_mv, mah, mv) and mah > prev_mah:
                 wh = (mah - prev_mah) / 1000 * (prev_mv + mv) / 2 / 1000
                 wh /= CHARGE_EFFICIENCY
-                gap_start = datetime.datetime.fromtimestamp(prev_t).astimezone()
+                gap_start = dt.datetime.fromtimestamp(prev_t).astimezone()
                 append_row(
                     args.state_dir / "sleep-charge.csv",
                     "gap_start,gap_end,wall_wh",
@@ -203,10 +218,9 @@ def main() -> None:
         prev_t, prev_mah, prev_mv = now, mah, mv
 
         if now - last_publish >= PUBLISH_SECONDS:
-            try:
+            # Recording continues whatever goes wrong; the next publish retries.
+            with contextlib.suppress(Exception):
                 publish(args.state_dir, args.device_out, args.name)
-            except Exception:
-                pass  # recording continues; next publish retries
             last_publish = now
 
 

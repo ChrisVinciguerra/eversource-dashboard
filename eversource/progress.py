@@ -8,8 +8,8 @@ for the duration of a background job.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from contextvars import ContextVar, Token
-from typing import Callable
 
 Sink = Callable[[str], None]
 
@@ -26,8 +26,10 @@ def emit(message: str) -> None:
 
 
 def set_sink(sink: Sink) -> Token[Sink | None]:
+    """Send progress messages to `sink`; returns the token to undo it."""
     return _sink.set(sink)
 
 
 def reset_sink(token: Token[Sink | None]) -> None:
+    """Restore the sink that was active before `set_sink`."""
     _sink.reset(token)

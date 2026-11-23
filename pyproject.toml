@@ -1,7 +1,7 @@
 [project]
 name = "eversource-dashboard"
 version = "0.1.0"
-requires-python = ">=3.11"
+requires-python = ">=3.15"
 dependencies = [
     "fastapi>=0.115",
     "pandas>=3.0.6",
@@ -18,3 +18,32 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["eversource"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.6",
+]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # trailing commas are the formatter's job
+    "D203",    # conflicts with D211 (no blank line before a class docstring)
+    "D213",    # conflicts with D212 (docstring summary on the first line)
+    "CPY001",  # no per-file copyright headers; see LICENSE
+    "TID252",  # relative imports within the package are the house style
+    "T201",    # a CLI prints
+    "EM",      # exception messages are written inline
+    "TRY003",  # ...and may be long
+    "D401",    # docstrings may name what a function returns ("The rows that...")
+    "N818",    # exception names say what happened (SessionExpired), no Error suffix
+    "PLW0603", # the server keeps its one job and cache in module state
+    "RUF001",  # en dashes, × and … in text are deliberate
+    "RUF002",
+    "RUF003",
+    "S603",    # subprocess calls run fixed commands (security, ssh, ioreg)
+    "S607",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"eversource/client.py" = ["E501"]  # GraphQL queries kept as captured

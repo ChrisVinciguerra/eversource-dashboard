@@ -24,11 +24,14 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 from statistics import median, quantiles
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from .config import Json
 from .loads import STEADY_KW, steady_load_name
+
+if TYPE_CHECKING:
+    from .config import Json
 
 RECENT_DAYS = 7  # an episode that ended longer ago than this is old news
 MAX_FLAGS = 3
@@ -39,6 +42,7 @@ HIGH_DAY_KWH = 3.0  # a day this far above normal (and 1.5x it) is "high"
 HIGH_DAY_RATIO = 1.5
 MIN_EPISODE_KWH = 20.0  # total extra energy before a stretch is worth a flag
 BIG_LOAD_KW = 0.4  # a 15-minute read above this means something big is on
+MIN_BIG_READS = 4  # an hour of them before a stretch can be one big load
 
 FLOOR_PCTL = 0.03  # the day's floor: its third-lowest 15-minute read
 FLOOR_WINDOW = 7
@@ -50,7 +54,11 @@ def _span(start: str, end: str) -> str:
     a, b = date.fromisoformat(start), date.fromisoformat(end)
     if a == b:
         return f"{a:%b} {a.day}"
-    return f"{a:%b} {a.day}–{b.day}" if a.month == b.month else f"{a:%b} {a.day}–{b:%b} {b.day}"
+    return (
+        f"{a:%b} {a.day}–{b.day}"
+        if a.month == b.month
+        else f"{a:%b} {a.day}–{b:%b} {b.day}"
+    )
 
 
 def _watts(kw: float) -> str:
@@ -69,7 +77,7 @@ def compute_flags(
     maps a day to $/kWh (omit it and the flags carry no dollar figures).
     """
     buckets: dict[str, float] = defaultdict(float)  # "YYYY-MM-DDTHH:MM" -> kWh
-    for start, value in zip(frame["start"], frame["value"]):
+    for start, value in zip(frame["start"], frame["value"], strict=True):
         if pd.notna(value):
             buckets[str(start)[:16]] += float(value)
     reads: dict[str, list[float]] = defaultdict(list)  # day -> kW per bucket
@@ -115,22 +123,26 @@ def _floor_flag(
     kwh_month = step * 24 * 30
     rate = rates.get(full[-1])
     cost = f" · ~${kwh_month * rate:.0f}/mo" if rate else ""
-    return [{
-        "kind": "floor_shift",
-        "date": start,
-        "end_date": full[-1],
-        "ongoing": True,
-        "kwh": round(kwh_month, 1),
-        "watts": round(now * 1000),
-        "typical_watts": round(before * 1000),
-        "headline": f"Always-on load up about {_watts(step)} since {_span(start, start)}",
-        "value": f"+{_watts(step)}{cost}",
-        "detail": f"Most of the past week the house idled at ~{_watts(now)}, up from "
-        f"~{_watts(before)}: about {kwh_month:.0f} kWh a month if it stays on.",
-    }]
+    return [
+        {
+            "kind": "floor_shift",
+            "date": start,
+            "end_date": full[-1],
+            "ongoing": True,
+            "kwh": round(kwh_month, 1),
+            "watts": round(now * 1000),
+            "typical_watts": round(before * 1000),
+            "headline": f"Always-on load up about {_watts(step)} "
+            f"since {_span(start, start)}",
+            "value": f"+{_watts(step)}{cost}",
+            "detail": f"Most of the past week the house idled at ~{_watts(now)}, "
+            f"up from ~{_watts(before)}: about {kwh_month:.0f} kWh a month "
+            "if it stays on.",
+        }
+    ]
 
 
-def _busy_stretches(
+def _busy_stretches(  # noqa: PLR0913, PLR0917 -- the day's reads, as computed above
     days: list[str],
     full: list[str],
     reads: dict[str, list[float]],
@@ -148,12 +160,18 @@ def _busy_stretches(
         if len(prior) >= MIN_HISTORY:
             normal[day] = median(prior)
             extra[day] = total[day] - normal[day]
-    high = [d for d in extra if extra[d] >= max(HIGH_DAY_KWH, (HIGH_DAY_RATIO - 1) * normal[d])]
+    high = [
+        d
+        for d in extra
+        if extra[d] >= max(HIGH_DAY_KWH, (HIGH_DAY_RATIO - 1) * normal[d])
+    ]
 
     # One ordinary day in between does not end a stretch.
     runs: list[list[str]] = []
     for day in high:
-        if runs and date.fromisoformat(day) - date.fromisoformat(runs[-1][-1]) <= timedelta(days=2):
+        if runs and date.fromisoformat(day) - date.fromisoformat(
+            runs[-1][-1]
+        ) <= timedelta(days=2):
             runs[-1].append(day)
         else:
             runs.append([day])
@@ -170,22 +188,37 @@ def _busy_stretches(
         if kwh < MIN_EPISODE_KWH or (last - date.fromisoformat(end)).days > RECENT_DAYS:
             continue
         ongoing = end >= still_on
-        usd = sum(extra[d] * rates[d] for d in span) if all(d in rates for d in span) else None
+        usd = (
+            sum(extra[d] * rates[d] for d in span)
+            if all(d in rates for d in span)
+            else None
+        )
         typical = median(normal[d] for d in span)
-        flags.append({
-            "kind": "busy_stretch",
-            "date": start,
-            "end_date": end,
-            "ongoing": ongoing,
-            "kwh": round(kwh, 1),
-            "typical_kwh": round(typical, 1),
-            "usd": round(usd, 2) if usd else None,
-            "headline": (f"{kwh:.0f} kWh above normal since {_span(start, start)}" if ongoing and start != end
-                         else f"{_span(start, end)} ran {kwh:.0f} kWh above normal"),
-            "value": f"+{kwh:.0f} kWh" + (f" · ~${usd:.0f}" if usd else ""),
-            "detail": _shape([kw for d in span for kw in reads[d]], kwh, typical / 24, hours, start)
-            + f" A normal day lately is ~{typical:.0f} kWh.",
-        })
+        flags.append(
+            {
+                "kind": "busy_stretch",
+                "date": start,
+                "end_date": end,
+                "ongoing": ongoing,
+                "kwh": round(kwh, 1),
+                "typical_kwh": round(typical, 1),
+                "usd": round(usd, 2) if usd else None,
+                "headline": (
+                    f"{kwh:.0f} kWh above normal since {_span(start, start)}"
+                    if ongoing and start != end
+                    else f"{_span(start, end)} ran {kwh:.0f} kWh above normal"
+                ),
+                "value": f"+{kwh:.0f} kWh" + (f" · ~${usd:.0f}" if usd else ""),
+                "detail": _shape(
+                    [kw for d in span for kw in reads[d]],
+                    kwh,
+                    typical / 24,
+                    hours,
+                    start,
+                )
+                + f" A normal day lately is ~{typical:.0f} kWh.",
+            }
+        )
     return flags
 
 
@@ -194,7 +227,10 @@ def _shape(
 ) -> str:
     """Say what the stretch's reads look like: one steady load, or not."""
     big = [kw for kw in kws if kw >= BIG_LOAD_KW]
-    if len(big) < 4 or sum(kw - normal_kw for kw in big) * hours < 0.6 * extra_kwh:
+    if (
+        len(big) < MIN_BIG_READS
+        or sum(kw - normal_kw for kw in big) * hours < 0.6 * extra_kwh
+    ):
         return "Spread across the days, not one big load."
     on_hours = f"{len(big) * hours:.0f} hours"
     low, mid, high = quantiles(big, n=4)

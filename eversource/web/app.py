@@ -15,13 +15,14 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from .. import progress
 from ..auth import credentials, login
@@ -33,10 +34,14 @@ from ..config import (
     NoExports,
     SessionExpired,
     load_config,
+    today,
 )
 from ..data import cached_payload
 from ..devices import refresh_device_sources
 from ..fetch import run_export, run_update
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 # How long the sign-in job waits for the MFA code before giving up.
 MFA_WAIT_SECONDS = 300
@@ -79,6 +84,7 @@ class Job:
     _mfa_ready: threading.Event = field(default_factory=threading.Event)
 
     def state(self) -> Json:
+        """Return the job as the page polls it."""
         return {
             "kind": self.kind,
             "running": self.running,
@@ -95,10 +101,12 @@ class Job:
         self.mfa_prompt = description
         if not self._mfa_ready.wait(MFA_WAIT_SECONDS):
             raise CliError("timed out waiting for the verification code.")
-        assert self._mfa_code is not None
+        if self._mfa_code is None:
+            raise CliError("no verification code was supplied.")
         return self._mfa_code
 
     def supply_mfa(self, code: str) -> None:
+        """Hand over the code the sign-in job is waiting for."""
         self._mfa_code = code
         self._mfa_ready.set()
 
@@ -146,7 +154,7 @@ def _freshness() -> Json:
     return {"failing": _fails > 0, "check_due": due}
 
 
-def _run_job(job: Job, target) -> None:
+def _run_job(job: Job, target: Callable[[Job], None]) -> None:
     token = progress.set_sink(job.log.append)
     try:
         target(job)
@@ -155,7 +163,7 @@ def _run_job(job: Job, target) -> None:
         job.error = str(error)
     except CliError as error:
         job.error = str(error)
-    except Exception as error:  # surfaced in the UI instead of a dead spinner
+    except Exception as error:  # noqa: BLE001 -- shown in the UI, not a dead spinner
         job.error = f"{type(error).__name__}: {error}"
     finally:
         progress.reset_sink(token)
@@ -164,7 +172,7 @@ def _run_job(job: Job, target) -> None:
         job.running = False
 
 
-def _start_job(kind: str, target) -> JSONResponse:
+def _start_job(kind: str, target: Callable[[Job], None]) -> JSONResponse:
     global _job
     with _job_lock:
         if _job is not None and _job.running:
@@ -180,9 +188,9 @@ def _do_update(job: Job) -> None:
         if run_update(cfg, None, None) is None and job.log:
             job.note = job.log[-1]
     except NoExports:
-        today = date.today()
+        end = today()
         progress.emit(f"no exports yet — fetching the last {FIRST_EXPORT_DAYS} days")
-        run_export(cfg, None, today - timedelta(days=FIRST_EXPORT_DAYS), today, None)
+        run_export(cfg, None, end - timedelta(days=FIRST_EXPORT_DAYS), end, None)
 
 
 # --------------------------------------------------------------- endpoints --
@@ -196,11 +204,14 @@ class Credentials(BaseModel):
 
 
 class MfaCode(BaseModel):
+    """The verification code typed into the page."""
+
     code: str
 
 
 @app.get("/api/data")
 def api_data() -> Json:
+    """Return the dashboard payload, or an empty one before the first export."""
     try:
         return cached_payload()
     except NoExports as error:
@@ -217,13 +228,17 @@ def api_data() -> Json:
 
 @app.post("/api/refresh-devices")
 def api_refresh_devices() -> Json:
-    """Re-pull device specs that name a remote source (best effort, bounded
-    by short timeouts). Runs in FastAPI's threadpool, off the event loop."""
+    """Re-pull device specs that name a remote source.
+
+    Best effort, bounded by short timeouts. Runs in FastAPI's threadpool, off
+    the event loop.
+    """
     return {"changed": refresh_device_sources()}
 
 
 @app.post("/api/update")
 def api_update() -> JSONResponse:
+    """Start pulling new reads in the background."""
     return _start_job("update", _do_update)
 
 
@@ -239,6 +254,8 @@ def api_session() -> Json:
 
 @app.post("/api/login")
 def api_login(body: Credentials) -> JSONResponse:
+    """Start a sign-in in the background."""
+
     def target(job: Job) -> None:
         login(load_config(), body.username, body.password, mfa_prompt=job.ask_for_mfa)
 
@@ -247,6 +264,7 @@ def api_login(body: Credentials) -> JSONResponse:
 
 @app.post("/api/mfa")
 def api_mfa(body: MfaCode) -> JSONResponse:
+    """Pass a verification code to the sign-in that asked for it."""
     if _job is None or not _job.running or _job.mfa_prompt is None:
         return JSONResponse({"error": "no sign-in is waiting for a code"}, 409)
     _job.supply_mfa(body.code)
@@ -255,18 +273,20 @@ def api_mfa(body: MfaCode) -> JSONResponse:
 
 @app.get("/api/job")
 def api_job() -> Json:
-    state = (
-        _job.state()
-        if _job is not None
-        else {"kind": None, "running": False}
-    )
+    """Return the current job and whether an automatic pull is due."""
+    state = _job.state() if _job is not None else {"kind": None, "running": False}
     return {**state, **_freshness()}
 
 
 @app.middleware("http")
-async def revalidate_static(request, call_next):
-    """Make browsers revalidate static files (ETag 304s), not heuristically
-    cache them — a stale app.js against a fresh index.html breaks the page."""
+async def revalidate_static(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Make browsers revalidate static files instead of caching on a guess.
+
+    A stale app.js against a fresh index.html breaks the page; with this they
+    are checked each load (ETag 304s).
+    """
     response = await call_next(request)
     response.headers.setdefault("Cache-Control", "no-cache")
     return response

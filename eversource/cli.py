@@ -20,7 +20,14 @@ from datetime import date
 
 from .auth import keychain_delete, login
 from .client import Client
-from .config import CONFIG_PATH, CliError, Config, load_config, save_config
+from .config import (
+    CONFIG_PATH,
+    CliError,
+    Config,
+    load_config,
+    save_config,
+    today,
+)
 from .fetch import run_export, run_update
 
 ACCOUNT_HELP = "billing account number (default: first)"
@@ -28,6 +35,7 @@ EXPORT_OUTPUT_HELP = "output folder (default: exports/eversource_export_<timesta
 
 
 def cmd_login(args: argparse.Namespace, cfg: Config) -> None:
+    """Sign in interactively and save the session."""
     username = args.username or cfg.get("username") or input("Email or username: ")
     password = getpass.getpass(f"Password for {username}: ")
     login(cfg, username, password, mfa_prompt=lambda _: input("Verification code: "))
@@ -38,7 +46,8 @@ def cmd_login(args: argparse.Namespace, cfg: Config) -> None:
     print(f"signed in — webId {account_info['webId']}, {count} billing account(s).")
 
 
-def cmd_logout(args: argparse.Namespace, cfg: Config) -> None:
+def cmd_logout(_args: argparse.Namespace, cfg: Config) -> None:
+    """Forget the saved password and session."""
     username = cfg.get("username")
     if username:
         keychain_delete(username)
@@ -49,7 +58,8 @@ def cmd_logout(args: argparse.Namespace, cfg: Config) -> None:
     print(f"signed out — cleared {CONFIG_PATH}")
 
 
-def cmd_accounts(args: argparse.Namespace, cfg: Config) -> None:
+def cmd_accounts(_args: argparse.Namespace, cfg: Config) -> None:
+    """List the billing accounts and their meters."""
     with Client(cfg) as client:
         for item in client.accounts()["accountSwitcherItems"]:
             print(
@@ -61,22 +71,26 @@ def cmd_accounts(args: argparse.Namespace, cfg: Config) -> None:
 
 
 def cmd_export(args: argparse.Namespace, cfg: Config) -> None:
+    """Export a date range to a new CSV folder."""
     start = date.fromisoformat(args.start)
-    end = date.fromisoformat(args.end) if args.end else date.today()
+    end = date.fromisoformat(args.end) if args.end else today()
     run_export(cfg, args.account, start, end, args.output)
 
 
 def cmd_update(args: argparse.Namespace, cfg: Config) -> None:
+    """Extend the exports from the last exported day through today."""
     run_update(cfg, args.account, args.output)
 
 
-def cmd_serve(args: argparse.Namespace, cfg: Config) -> None:
-    from .web import serve
+def cmd_serve(args: argparse.Namespace, _cfg: Config) -> None:
+    """Run the dashboard."""
+    from .web import serve  # noqa: PLC0415 -- the web stack loads only to serve
 
     serve(port=args.port, open_browser=not args.no_open, host=args.host)
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         description=(
             "Pull Eversource energy data: CSV exports and a local dashboard. "
@@ -133,7 +147,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-open", action="store_true", help="don't open the browser"
     )
     serve_cmd.add_argument(
-        "--host", default="127.0.0.1",
+        "--host",
+        default="127.0.0.1",
         help="interface to bind (default 127.0.0.1; 0.0.0.0 to serve the LAN)",
     )
     serve_cmd.set_defaults(func=cmd_serve)
@@ -142,6 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    """Run the command line."""
     # No command means the dashboard: `uv run eversource.py` just serves.
     argv = sys.argv[1:] or ["serve"]
     args = build_parser().parse_args(argv)

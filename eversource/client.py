@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from http import HTTPStatus
 from typing import Any, Self
 
 import requests
@@ -44,7 +45,6 @@ from .config import (
     save_config,
 )
 from .progress import emit
-
 
 # ---------------------------------------------------------------- GraphQL ---
 
@@ -151,18 +151,24 @@ def _has_meters(accounts: Json) -> bool:
 
 # ------------------------------------------------------------------ client --
 
+# Tries per Eversource call: the second follows a fresh sign-in.
+ATTEMPTS = 2
+
 
 class Client:
     """Client for both backends behind this tool, over plain HTTP."""
 
     def __init__(self, cfg: Config) -> None:
+        """Wrap a config; the HTTP session opens on first use."""
         self.cfg = cfg
         self._session: requests.Session | None = None
 
     def __enter__(self) -> Self:
+        """Return the client itself."""
         return self
 
     def __exit__(self, *exc_info: object) -> None:
+        """Close the HTTP session if one was opened."""
         if self._session is not None:
             self._session.close()
             self._session = None
@@ -184,14 +190,14 @@ class Client:
         emit("Session expired — signing in again…")
         self._session = login(self.cfg)
 
-    def es_get(self, path: str) -> Any:
+    def es_get(self, path: str) -> Any:  # noqa: ANN401 -- whatever JSON the API sends
         """GET an Eversource JSON API, renewing the session if it has lapsed."""
-        for attempt in (1, 2):
+        for attempt in range(1, ATTEMPTS + 1):
             session = self.session()
             try:
                 bearer = access_token(self.cfg, session)
             except SessionExpired:
-                if attempt == 2:
+                if attempt == ATTEMPTS:
                     raise
                 self._reauth()
                 continue
@@ -210,7 +216,7 @@ class Client:
             if stale and attempt == 1:
                 self._reauth()
                 continue
-            if response.status_code != 200:
+            if response.status_code != HTTPStatus.OK:
                 raise SessionExpired(
                     f"Eversource API {path} returned {response.status_code}. "
                     f"{RELOGIN_HINT}"

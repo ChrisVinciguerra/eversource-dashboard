@@ -25,8 +25,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from statistics import median, quantiles
+from typing import TYPE_CHECKING
 
-from .config import Json
+if TYPE_CHECKING:
+    from .config import Json
+
 
 RUN_KW = 0.42  # the house is "running something big" at or above this
 MIN_SLOTS = 4  # an hour
@@ -50,7 +53,7 @@ def steady_load_name(month: int) -> str:
     return STEADY_BY_MONTH[month]
 
 
-def _name(kws: list[float], month: int, ended: bool = True) -> str | None:
+def _name(kws: list[float], month: int, *, ended: bool = True) -> str | None:
     hours, mid = len(kws) / 4, median(kws)
     if not ended and hours <= DISHWASHER_HOURS[1]:
         return None  # could still turn out to be a dishwasher cycle
@@ -63,7 +66,11 @@ def _name(kws: list[float], month: int, ended: bool = True) -> str | None:
     low, _, high = quantiles(kws, n=4)
     if STEADY_KW[0] <= mid <= STEADY_KW[1] and low >= 0.8 * mid and high <= 1.25 * mid:
         return steady_load_name(month)
-    if month not in SUMMER and STEADY_KW[0] <= mid <= HEATER_MAX_KW and max(kws) <= HEATER_PEAK_KW:
+    if (
+        month not in SUMMER
+        and STEADY_KW[0] <= mid <= HEATER_MAX_KW
+        and max(kws) <= HEATER_PEAK_KW
+    ):
         return "space heater"
     return None
 
@@ -80,7 +87,11 @@ def detect_loads(meter: dict[str, float]) -> list[Json]:
     i = 0
     while i < len(slots):
         j = i
-        while j < len(slots) and slots[j][1] >= RUN_KW and slots[j][0] - slots[i][0] == (j - i) * step:
+        while (
+            j < len(slots)
+            and slots[j][1] >= RUN_KW
+            and slots[j][0] - slots[i][0] == (j - i) * step
+        ):
             j += 1
         if j - i >= MIN_SLOTS:
             kws = [kw for _, kw in slots[i:j]]
@@ -88,11 +99,13 @@ def detect_loads(meter: dict[str, float]) -> list[Json]:
             if name:
                 around = [kw for _, kw in slots[max(0, i - 2) : i] + slots[j : j + 2]]
                 idle = min(around, default=0.0)
-                loads.append({
-                    "name": name,
-                    "start": f"{slots[i][0]:%Y-%m-%dT%H:%M}",
-                    "end": f"{slots[j - 1][0] + step:%Y-%m-%dT%H:%M}",
-                    "kwh": round(sum(kw - idle for kw in kws) / 4, 2),
-                })
+                loads.append(
+                    {
+                        "name": name,
+                        "start": f"{slots[i][0]:%Y-%m-%dT%H:%M}",
+                        "end": f"{slots[j - 1][0] + step:%Y-%m-%dT%H:%M}",
+                        "kwh": round(sum(kw - idle for kw in kws) / 4, 2),
+                    }
+                )
         i = max(j, i + 1)
     return loads

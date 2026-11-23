@@ -71,6 +71,13 @@ This is a `uv` project. Install dependencies once:
 uv sync
 ```
 
+Lint and format with [ruff](https://docs.astral.sh/ruff/) (every rule is on;
+the few exceptions are listed with their reasons in `pyproject.toml`):
+
+```sh
+uv run ruff format . && uv run ruff check .
+```
+
 Then sign in:
 
 ```sh

@@ -9,6 +9,7 @@ password is never stored there — it goes in the system keychain (off macOS, a
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,11 +57,16 @@ EXPORT_FIRST_HINT = "run `eversource.py export` first"
 
 Json = dict[str, Any]
 
-# Config keys: "username" (str), "cookies" (list of cookie dicts), "okta"
-# (OktaTokens), "okta_dt" (str: device-trust cookie that suppresses MFA),
-# "accounts" (Json), "jwt" ({account: {"token", "exp"}}), "opower_meta"
-# ({account: Json}).
+# What a config holds: "username" (str), "cookies" (list of cookie dicts),
+# "okta" (OktaTokens), "okta_dt" (str: device-trust cookie that suppresses
+# MFA), "accounts" (Json), "jwt" (by account, each with "token" and "exp"),
+# "opower_meta" (Json by account).
 Config = dict[str, Any]
+
+
+def today() -> date:
+    """Return today's date where the meter is, whatever the machine's zone."""
+    return datetime.now(TZ).date()
 
 
 class CliError(Exception):
