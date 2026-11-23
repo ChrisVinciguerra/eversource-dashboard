@@ -12,6 +12,11 @@ its length, level and season.
 - Space heater on its thermostat: outside summer, a run that wanders or sits
   higher (up to ~1.4 kW) as the heater cycles between settings.
 
+A run still going at the newest read has no length yet, and its length is
+what tells a dishwasher from the heater: the first hours of a dishwasher cycle
+look like a heater on its thermostat. Such a run stays unnamed until it has
+outlasted the longest dishwasher cycle or later reads show where it ended.
+
 These are guesses from shape, not measurements; anything that does not match
 is left unnamed.
 """
@@ -45,8 +50,10 @@ def steady_load_name(month: int) -> str:
     return STEADY_BY_MONTH[month]
 
 
-def _name(kws: list[float], month: int) -> str | None:
+def _name(kws: list[float], month: int, ended: bool = True) -> str | None:
     hours, mid = len(kws) / 4, median(kws)
+    if not ended and hours <= DISHWASHER_HOURS[1]:
+        return None  # could still turn out to be a dishwasher cycle
     if (
         DISHWASHER_HOURS[0] <= hours <= DISHWASHER_HOURS[1]
         and DISHWASHER_KW[0] <= mid <= DISHWASHER_KW[1]
@@ -77,7 +84,7 @@ def detect_loads(meter: dict[str, float]) -> list[Json]:
             j += 1
         if j - i >= MIN_SLOTS:
             kws = [kw for _, kw in slots[i:j]]
-            name = _name(kws, slots[i][0].month)
+            name = _name(kws, slots[i][0].month, ended=j < len(slots))
             if name:
                 around = [kw for _, kw in slots[max(0, i - 2) : i] + slots[j : j + 2]]
                 idle = min(around, default=0.0)
