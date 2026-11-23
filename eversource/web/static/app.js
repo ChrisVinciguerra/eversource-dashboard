@@ -1312,6 +1312,13 @@ async function pollJob() {
           setBanner({});
           if (job.kind === "login") startUpdate();
           else await loadData();
+          // An update that found nothing says so, briefly, rather than
+          // leaving an unchanged page to speak for it.
+          if (job.note) {
+            const text = job.note[0].toUpperCase() + job.note.slice(1) + ".";
+            setBanner({ text });
+            setTimeout(() => { if ($("banner-text").textContent === text) setBanner({}); }, 8000);
+          }
         }
         return;
       }

@@ -8,6 +8,7 @@ because they carry costs and temperatures not derivable from meter reads.
 
 from __future__ import annotations
 
+import io
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from .config import (
     Json,
     NoExports,
 )
+from .data import DATASET_KEYS
 from .progress import emit
 
 # Days of 15-min reads to request per GraphQL call.
@@ -265,6 +267,44 @@ def aggregate(quarter: pd.DataFrame, freq: str) -> pd.DataFrame:
     return out
 
 
+def fetch_datasets(
+    client: Client, account: Json, start: date, end: date
+) -> dict[str, pd.DataFrame]:
+    """Fetch every dataset for a date range, keyed by CSV name."""
+    quarter = fetch_quarter_hour(client, account, start, end)
+    if quarter.empty:
+        raise CliError("no interval reads returned for the requested range")
+    frames = {
+        "quarter_hour": quarter,
+        "hourly": aggregate(quarter, "h"),
+        "daily": aggregate(quarter, "D"),
+    }
+    # Billed data is requested as "N months back from today", so a long
+    # --start has to widen N or the CSVs silently stop short of it.
+    for name, fetch, minimum in (
+        ("monthly", fetch_monthly, MONTHLY_MIN_MONTHS),
+        ("bills", fetch_bills, BILLS_MIN_MONTHS),
+    ):
+        frame = fetch(client, account, months_of_history(start, minimum))
+        if frame.empty:
+            emit(f"note: no {name} data returned; skipped")
+        else:
+            frames[name] = frame
+    return frames
+
+
+def write_export(frames: dict[str, pd.DataFrame], output: str | None) -> Path:
+    """Write the datasets to a new export folder, one CSV each."""
+    out_dir = Path(
+        output or EXPORT_ROOT / f"eversource_export_{datetime.now(TZ):%Y-%m-%d_%H%M%S}"
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, frame in frames.items():
+        write_csv(frame, out_dir / f"{name}.csv")
+    emit(f"export complete -> {out_dir}/")
+    return out_dir
+
+
 def run_export(
     cfg: Config,
     account_number: str | None,
@@ -277,33 +317,37 @@ def run_export(
         account = client.pick_account(account_number)
         if start > end:
             raise CliError("--start is after --end")
+        frames = fetch_datasets(client, account, start, end)
+    return write_export(frames, output)
 
-        out_dir = Path(
-            output
-            or EXPORT_ROOT / f"eversource_export_{datetime.now(TZ):%Y-%m-%d_%H%M%S}"
-        )
-        out_dir.mkdir(parents=True, exist_ok=True)
 
-        quarter = fetch_quarter_hour(client, account, start, end)
-        if quarter.empty:
-            raise CliError("no interval reads returned for the requested range")
-        write_csv(quarter, out_dir / "quarter_hour.csv")
-        write_csv(aggregate(quarter, "h"), out_dir / "hourly.csv")
-        write_csv(aggregate(quarter, "D"), out_dir / "daily.csv")
+def _csv_rows(source: Path | io.StringIO) -> pd.DataFrame:
+    """Read a CSV as its literal text, so rows compare exactly as written."""
+    return pd.read_csv(source, dtype=str, keep_default_na=False)
 
-        # Billed data is requested as "N months back from today", so a long
-        # --start has to widen N or the CSVs silently stop short of it.
-        for name, fetch, minimum in (
-            ("monthly", fetch_monthly, MONTHLY_MIN_MONTHS),
-            ("bills", fetch_bills, BILLS_MIN_MONTHS),
-        ):
-            frame = fetch(client, account, months_of_history(start, minimum))
-            if frame.empty:
-                emit(f"note: no {name} data returned; skipped")
-            else:
-                write_csv(frame, out_dir / f"{name}.csv")
-        emit(f"export complete -> {out_dir}/")
-        return out_dir
+
+def rows_not_exported(name: str, frame: pd.DataFrame) -> pd.DataFrame:
+    """Return the rows of `frame` that the export folders don't already hold.
+
+    A row counts as held only when the merged exports (newest folder winning)
+    carry it with every value the same, so a revised read is new too.
+    """
+    keys = DATASET_KEYS[name]
+    new = _csv_rows(io.StringIO(frame.to_csv(index=False)))
+    folders = sorted(p for p in EXPORT_ROOT.glob(EXPORT_GLOB) if p.is_dir())
+    olds = [
+        _csv_rows(folder / f"{name}.csv")
+        for folder in reversed(folders)  # newest first + keep="first" wins
+        if (folder / f"{name}.csv").is_file()
+    ]
+    if not olds:
+        return frame
+    old = pd.concat(olds, ignore_index=True).drop_duplicates(subset=keys, keep="first")
+    if set(new.columns) - set(old.columns):
+        return frame
+    held = set(old[list(new.columns)].itertuples(index=False, name=None))
+    missing = [row not in held for row in new.itertuples(index=False, name=None)]
+    return frame[missing]
 
 
 def latest_exported_day() -> date:
@@ -321,12 +365,38 @@ def latest_exported_day() -> date:
     return date.fromisoformat(latest[:10])
 
 
-def run_update(cfg: Config, account_number: str | None, output: str | None) -> Path:
+def run_update(
+    cfg: Config, account_number: str | None, output: str | None
+) -> Path | None:
     """Export from the latest already-exported day through today.
 
     The latest exported day may have been partial, so it is re-fetched; the
-    merge step dedups the overlap, newest export winning.
+    merge step dedups the overlap, newest export winning. Reads post in
+    blocks hours apart, so most pulls find nothing: only the datasets that
+    differ from what is already exported are written, and when none do no
+    folder is made and None is returned.
     """
     start = latest_exported_day()
     emit(f"updating from {start} to today")
-    return run_export(cfg, account_number, start, date.today(), output)
+    with Client(cfg) as client:
+        account = client.pick_account(account_number)
+        frames = fetch_datasets(client, account, start, date.today())
+
+    fresh = {name: rows_not_exported(name, frame) for name, frame in frames.items()}
+    changed = {name: frames[name] for name, rows in fresh.items() if not rows.empty}
+    quarter = frames["quarter_hour"]
+    posted = pd.to_datetime(quarter["end"], utc=True).max().tz_convert(TZ)
+    through = f"{posted:%b} {posted.day}, {posted:%I:%M %p}".replace(", 0", ", ")
+    if not changed:
+        emit(f"nothing new: Eversource has posted reads through {through}")
+        return None
+    out_dir = write_export(changed, output)
+    reads = fresh["quarter_hour"]["start"].nunique()
+    if reads:
+        emit(f"{reads} new 15-min reads, through {through}")
+    else:
+        emit(
+            f"no new reads (still through {through}); "
+            f"updated {', '.join(changed)}"
+        )
+    return out_dir

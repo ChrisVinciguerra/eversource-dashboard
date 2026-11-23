@@ -181,7 +181,9 @@ uv run eversource.py serve                          # the dashboard
   when `--start` reaches further back than that.
 - **`update`** — finds the most recent 15-minute read across every
   `exports/eversource_export_*` folder and re-exports from that day through
-  today (the last day may have been partial, so it is re-fetched). Takes
+  today (the last day may have been partial, so it is re-fetched). Only the
+  datasets that differ from what is already exported are written; reads post
+  in blocks hours apart, so most runs find nothing and write no folder. Takes
   `--account` and `-o/--output`.
 
 `exports/` is resolved beside the package (the repo root), so every command and

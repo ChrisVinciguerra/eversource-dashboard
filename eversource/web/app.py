@@ -70,6 +70,9 @@ class Job:
     log: list[str] = field(default_factory=list)
     error: str | None = None
     needs_login: bool = False
+    # A one-line outcome worth showing once the job is done (an update that
+    # found nothing new).
+    note: str | None = None
     # Set while the sign-in job is blocked waiting for a verification code.
     mfa_prompt: str | None = None
     _mfa_code: str | None = None
@@ -82,6 +85,7 @@ class Job:
             "log": self.log,
             "error": self.error,
             "needs_login": self.needs_login,
+            "note": self.note,
             "needs_mfa": self.mfa_prompt is not None and self._mfa_code is None,
             "mfa_prompt": self.mfa_prompt,
         }
@@ -173,7 +177,8 @@ def _start_job(kind: str, target) -> JSONResponse:
 def _do_update(job: Job) -> None:
     cfg = load_config()
     try:
-        run_update(cfg, None, None)
+        if run_update(cfg, None, None) is None and job.log:
+            job.note = job.log[-1]
     except NoExports:
         today = date.today()
         progress.emit(f"no exports yet — fetching the last {FIRST_EXPORT_DAYS} days")
